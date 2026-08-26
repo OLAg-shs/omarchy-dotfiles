@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "interval_seconds": 600,
+  "mode": "sequential",
+  "dynamic_theme": true,
+  "wallpapers": [],
+  "last_index": 0
+}

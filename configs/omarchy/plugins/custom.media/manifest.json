@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "custom.media",
+  "name": "Spotify Flow",
+  "version": "1.0.0",
+  "author": "Maccarthy Quest",
+  "description": "Spotify-themed audio controller & multi-tab switcher for Omarchy",
+  "kinds": [
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Spotify Flow",
+    "description": "Spotify-themed audio controller with tab switching deck",
+    "category": "Media",
+    "allowMultiple": false
+  }
+}

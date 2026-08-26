@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "custom.wall-rotator",
+  "name": "Wallpaper Rotator",
+  "version": "1.0.0",
+  "author": "chef_carthy",
+  "description": "Automated wallpaper rotator and theme controller for Omarchy",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Wallpaper Rotator",
+    "description": "Click to cycle wallpaper, right-click to open switcher",
+    "category": "Appearance",
+    "allowMultiple": false
+  }
+}
