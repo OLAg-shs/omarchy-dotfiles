@@ -90,6 +90,93 @@ BarWidget {
     running: false
   }
 
+  Process {
+    id: playerctlProc
+    running: false
+  }
+
+  function togglePlay() {
+    if (root.mediaService && root.activePlayer) {
+      root.mediaService.runAction("playPause", false, MediaModel.playerKey(root.activePlayer))
+    } else if (root.activePlayer && typeof root.activePlayer.togglePlaying === "function") {
+      root.activePlayer.togglePlaying()
+    } else {
+      playerctlProc.command = ["/home/chef_carthy/.local/bin/playerctl", "play-pause"]
+      playerctlProc.running = true
+    }
+  }
+
+  function skipNext() {
+    if (root.mediaService && root.activePlayer) {
+      root.mediaService.runAction("next", false, MediaModel.playerKey(root.activePlayer))
+    } else if (root.activePlayer && typeof root.activePlayer.next === "function") {
+      root.activePlayer.next()
+    } else {
+      playerctlProc.command = ["/home/chef_carthy/.local/bin/playerctl", "next"]
+      playerctlProc.running = true
+    }
+  }
+
+  function skipPrev() {
+    if (root.mediaService && root.activePlayer) {
+      root.mediaService.runAction("previous", false, MediaModel.playerKey(root.activePlayer))
+    } else if (root.activePlayer && typeof root.activePlayer.previous === "function") {
+      root.activePlayer.previous()
+    } else {
+      playerctlProc.command = ["/home/chef_carthy/.local/bin/playerctl", "previous"]
+      playerctlProc.running = true
+    }
+  }
+
+  function seekOffset(seconds) {
+    if (root.activePlayer && typeof root.activePlayer.seek === "function") {
+      root.activePlayer.seek(seconds)
+    } else {
+      playerctlProc.command = ["/home/chef_carthy/.local/bin/playerctl", "position", String(seconds)]
+      playerctlProc.running = true
+    }
+  }
+
+  function seekTo(targetSeconds) {
+    if (root.activePlayer && typeof root.activePlayer.setPosition === "function") {
+      root.activePlayer.setPosition(targetSeconds)
+    } else {
+      var diff = targetSeconds - root.positionSec
+      playerctlProc.command = ["/home/chef_carthy/.local/bin/playerctl", "position", String(diff)]
+      playerctlProc.running = true
+    }
+  }
+
+  IpcHandler {
+    target: "custom.media"
+
+    function toggle(): void {
+      root.turboPopupOpen = false
+      root.mediaPopupOpen = !root.mediaPopupOpen
+    }
+
+    function open(): void {
+      root.turboPopupOpen = false
+      root.mediaPopupOpen = true
+    }
+
+    function close(): void {
+      root.mediaPopupOpen = false
+    }
+
+    function playPause(): void {
+      root.togglePlay()
+    }
+
+    function next(): void {
+      root.skipNext()
+    }
+
+    function previous(): void {
+      root.skipPrev()
+    }
+  }
+
   // -------------------------------------------------------------
   // MPRIS MEDIA HANDLING
   // -------------------------------------------------------------
@@ -236,8 +323,8 @@ BarWidget {
       height: Math.min(parent.height - Style.space(6), Style.space(28))
       implicitWidth: mediaInner.implicitWidth + Style.space(14)
       radius: height / 2
-      color: mediaMouse.containsMouse ? "#201db954" : (root.isPlaying ? "#141db954" : "#12151c")
-      border.color: root.isPlaying ? "#1db954" : (mediaMouse.containsMouse ? "#1db95488" : "#2a3447")
+      color: root.isPlaying ? "#141db954" : "#12151c"
+      border.color: root.isPlaying ? "#1db954" : "#2a3447"
       border.width: 1
       visible: root.hasMedia
 
@@ -249,93 +336,183 @@ BarWidget {
         anchors.centerIn: parent
         spacing: Style.space(6)
 
-        // Spotify Icon
-        Rectangle {
-          width: Style.space(16)
-          height: Style.space(16)
-          radius: width / 2
-          color: root.isPlaying ? "#1db954" : "#2a2e39"
+        // 1. Main Info Area (Icon + Equalizer + Title + Artist) - Click opens popup
+        Item {
+          id: mediaInfoArea
           anchors.verticalCenter: parent.verticalCenter
+          implicitWidth: mediaInfoRow.implicitWidth
+          implicitHeight: mediaInfoRow.implicitHeight
 
-          Text {
-            anchors.centerIn: parent
-            text: root.getSourceIcon(root.activePlayer ? root.activePlayer.identity : "")
-            color: root.isPlaying ? "#000000" : "#8a94a6"
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: 10
-            font.bold: true
-          }
-        }
+          Row {
+            id: mediaInfoRow
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(5)
 
-        // 4-Bar Equalizer
-        Row {
-          spacing: Style.space(1.5)
-          anchors.verticalCenter: parent.verticalCenter
-          visible: root.isPlaying
-
-          Repeater {
-            model: 4
+            // Spotify Icon
             Rectangle {
-              required property int index
-              width: Style.space(2)
-              height: Style.space(3) + Math.abs(Math.sin(root.eqPhase * 1.8 + index * 0.9)) * Style.space(8)
-              radius: 1
+              width: Style.space(16)
+              height: Style.space(16)
+              radius: width / 2
+              color: root.isPlaying ? "#1db954" : "#2a2e39"
+              anchors.verticalCenter: parent.verticalCenter
+
+              Text {
+                anchors.centerIn: parent
+                text: root.getSourceIcon(root.activePlayer ? root.activePlayer.identity : "")
+                color: root.isPlaying ? "#000000" : "#8a94a6"
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: 10
+                font.bold: true
+              }
+            }
+
+            // 4-Bar Dancing Equalizer
+            Row {
+              spacing: Style.space(1.5)
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.isPlaying
+
+              Repeater {
+                model: 4
+                Rectangle {
+                  required property int index
+                  width: Style.space(2)
+                  height: Style.space(3) + Math.abs(Math.sin(root.eqPhase * 1.8 + index * 0.9)) * Style.space(8)
+                  radius: 1
+                  color: "#1db954"
+                  anchors.bottom: parent.bottom
+                }
+              }
+            }
+
+            // Track Title
+            Text {
+              text: root.title
+              color: root.isPlaying ? "#ffffff" : "#94a3b8"
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              font.bold: root.isPlaying
+              elide: Text.ElideRight
+              maximumLineCount: 1
+              width: Math.min(implicitWidth, 135)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            // Artist
+            Text {
+              text: root.artist ? "· " + root.artist : ""
               color: "#1db954"
-              anchors.bottom: parent.bottom
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+              visible: root.artist !== ""
+              width: Math.min(implicitWidth, 75)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+          }
+
+          MouseArea {
+            id: mediaInfoMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              root.turboPopupOpen = false
+              root.mediaPopupOpen = !root.mediaPopupOpen
+            }
+            onWheel: (wheel) => {
+              if (wheel.angleDelta.y > 0) root.seekOffset(5)
+              else if (wheel.angleDelta.y < 0) root.seekOffset(-5)
             }
           }
         }
 
-        // Track Title
-        Text {
-          text: root.title
-          color: root.isPlaying ? "#ffffff" : "#94a3b8"
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Style.font.bodySmall
-          font.bold: root.isPlaying
-          elide: Text.ElideRight
-          maximumLineCount: 1
-          width: Math.min(implicitWidth, 140)
+        // Subtle Divider
+        Rectangle {
+          width: 1
+          height: Style.space(10)
+          color: "#2a3447"
           anchors.verticalCenter: parent.verticalCenter
         }
 
-        // Artist
-        Text {
-          text: root.artist ? "· " + root.artist : ""
-          color: "#1db954"
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
-          visible: root.artist !== ""
-          width: Math.min(implicitWidth, 80)
+        // 2. Clickable Inline Control Buttons
+        Row {
+          id: inlineButtons
+          spacing: Style.space(3)
           anchors.verticalCenter: parent.verticalCenter
-        }
-      }
 
-      MouseArea {
-        id: mediaMouse
-        anchors.fill: parent
-        hoverEnabled: true
-        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
-        cursorShape: Qt.PointingHandCursor
+          // Prev Button
+          Rectangle {
+            width: Style.space(16)
+            height: Style.space(16)
+            radius: width / 2
+            color: prevInlineMouse.containsMouse ? "#251db954" : "transparent"
+            anchors.verticalCenter: parent.verticalCenter
 
-        onClicked: (mouse) => {
-          if (mouse.button === Qt.LeftButton) {
-            root.turboPopupOpen = false
-            root.mediaPopupOpen = !root.mediaPopupOpen
-          } else if (mouse.button === Qt.RightButton || mouse.button === Qt.MiddleButton) {
-            if (root.mediaService && root.activePlayer) {
-              root.mediaService.runAction("playPause", false, MediaModel.playerKey(root.activePlayer))
-            } else if (root.activePlayer && typeof root.activePlayer.togglePlaying === "function") {
-              root.activePlayer.togglePlaying()
+            Text {
+              anchors.centerIn: parent
+              text: "⏮"
+              color: prevInlineMouse.containsMouse ? "#1db954" : "#94a3b8"
+              font.pixelSize: 8
+            }
+
+            MouseArea {
+              id: prevInlineMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.skipPrev()
             }
           }
-        }
 
-        onWheel: (wheel) => {
-          if (!root.activePlayer) return
-          if (wheel.angleDelta.y > 0 && root.mediaService) root.mediaService.runAction("previous", false)
-          else if (wheel.angleDelta.y < 0 && root.mediaService) root.mediaService.runAction("next", false)
+          // Play / Pause Button
+          Rectangle {
+            width: Style.space(18)
+            height: Style.space(18)
+            radius: width / 2
+            color: playInlineMouse.containsMouse ? "#1ed760" : "#1db954"
+            anchors.verticalCenter: parent.verticalCenter
+
+            Text {
+              anchors.centerIn: parent
+              text: root.isPlaying ? "⏸" : "▶"
+              color: "#000000"
+              font.pixelSize: 8
+              font.bold: true
+            }
+
+            MouseArea {
+              id: playInlineMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.togglePlay()
+            }
+          }
+
+          // Next Button
+          Rectangle {
+            width: Style.space(16)
+            height: Style.space(16)
+            radius: width / 2
+            color: nextInlineMouse.containsMouse ? "#251db954" : "transparent"
+            anchors.verticalCenter: parent.verticalCenter
+
+            Text {
+              anchors.centerIn: parent
+              text: "⏭"
+              color: nextInlineMouse.containsMouse ? "#1db954" : "#94a3b8"
+              font.pixelSize: 8
+            }
+
+            MouseArea {
+              id: nextInlineMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.skipNext()
+            }
+          }
         }
       }
     }
@@ -624,23 +801,55 @@ BarWidget {
         }
       }
 
-      // Progress Bar
+      // Interactive Seek / Progress Bar
       Column {
         width: parent.width
         spacing: Style.space(4)
         visible: root.hasMedia
 
         Rectangle {
+          id: progressBarTrack
           width: parent.width
-          height: 4
-          radius: 2
+          height: progressMouse.containsMouse ? 6 : 4
+          radius: height / 2
           color: "#282828"
 
+          Behavior on height { NumberAnimation { duration: 150 } }
+
           Rectangle {
+            id: progressFill
             width: root.lengthSec > 0 ? parent.width * Math.min(1.0, root.positionSec / root.lengthSec) : (root.isPlaying ? parent.width * 0.4 : 0)
             height: parent.height
-            radius: 2
-            color: "#1db954"
+            radius: parent.radius
+            color: progressMouse.containsMouse ? "#1ed760" : "#1db954"
+
+            // Hover Thumb Knob
+            Rectangle {
+              width: 10
+              height: 10
+              radius: 5
+              color: "#ffffff"
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.right: parent.right
+              visible: progressMouse.containsMouse
+            }
+          }
+
+          MouseArea {
+            id: progressMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: (mouse) => {
+              if (root.lengthSec > 0) {
+                var pct = Math.max(0.0, Math.min(1.0, mouse.x / width))
+                root.seekTo(pct * root.lengthSec)
+              }
+            }
+            onWheel: (wheel) => {
+              if (wheel.angleDelta.y > 0) root.seekOffset(5)
+              else if (wheel.angleDelta.y < 0) root.seekOffset(-5)
+            }
           }
         }
 
@@ -678,16 +887,16 @@ BarWidget {
 
           Text {
             anchors.centerIn: parent
-            text: "󰒮"
+            text: "⏮"
             color: "#ffffff"
-            font.pixelSize: 15
+            font.pixelSize: 14
           }
           MouseArea {
             id: prevMouse
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: if (root.mediaService) root.mediaService.runAction("previous", false)
+            onClicked: root.skipPrev()
           }
         }
 
@@ -700,9 +909,9 @@ BarWidget {
 
           Text {
             anchors.centerIn: parent
-            text: root.isPlaying ? "󰏤" : "󰐊"
+            text: root.isPlaying ? "⏸" : "▶"
             color: "#000000"
-            font.pixelSize: 22
+            font.pixelSize: 18
             font.bold: true
           }
           MouseArea {
@@ -710,13 +919,7 @@ BarWidget {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: {
-              if (root.mediaService && root.activePlayer) {
-                root.mediaService.runAction("playPause", false, MediaModel.playerKey(root.activePlayer))
-              } else if (root.activePlayer && typeof root.activePlayer.togglePlaying === "function") {
-                root.activePlayer.togglePlaying()
-              }
-            }
+            onClicked: root.togglePlay()
           }
         }
 
@@ -730,16 +933,16 @@ BarWidget {
 
           Text {
             anchors.centerIn: parent
-            text: "󰒭"
+            text: "⏭"
             color: "#ffffff"
-            font.pixelSize: 15
+            font.pixelSize: 14
           }
           MouseArea {
             id: nextMouse
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: if (root.mediaService) root.mediaService.runAction("next", false)
+            onClicked: root.skipNext()
           }
         }
       }
