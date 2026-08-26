@@ -232,6 +232,14 @@ BarWidget {
       root.mediaPopupOpen = !root.mediaPopupOpen
     }
 
+    function togglePin(): void {
+      root.pinned = !root.pinned
+    }
+
+    function setPinned(val: string): void {
+      root.pinned = (val === "true" || val === "1")
+    }
+
     function open(): void {
       root.turboPopupOpen = false
       root.mediaPopupOpen = true
@@ -397,6 +405,22 @@ BarWidget {
   }
 
   // -------------------------------------------------------------
+  // DRAWER EXPANSION & PIN STATE (WAYBAR / TRAY COMPATIBLE ANIMATION)
+  // -------------------------------------------------------------
+  property bool pinned: false
+  property bool hoverExpanded: false
+  readonly property bool isChefExpanded: pinned || hoverExpanded
+  property real chefRevealProgress: isChefExpanded ? 1.0 : 0.0
+  readonly property int chefAnimationDuration: 600
+
+  Behavior on chefRevealProgress {
+    NumberAnimation {
+      duration: root.chefAnimationDuration
+      easing.type: Easing.OutCubic
+    }
+  }
+
+  // -------------------------------------------------------------
   // TOP BAR CONTAINER: Spotify (Auto-Wake) + Turbo HUD + Theme
   // -------------------------------------------------------------
   visible: true
@@ -408,35 +432,43 @@ BarWidget {
     anchors.verticalCenter: parent.verticalCenter
     spacing: Style.space(6)
 
-    // 1. Spotify Audio Capsule (Auto-Wakes on Play, Sleeps when Stopped)
+    // 1. Chef Player Spotify Capsule (Slide-out Drawer + Pin Support)
     Rectangle {
       id: mediaCapsule
       anchors.verticalCenter: parent.verticalCenter
       height: Math.min(parent.height - Style.space(6), Style.space(28))
-      implicitWidth: mediaInner.implicitWidth + Style.space(14)
+      implicitWidth: compactInfoArea.implicitWidth + Math.round(chefDrawerRow.implicitWidth * root.chefRevealProgress) + Style.space(16)
       radius: height / 2
-      color: root.isPlaying ? "#141db954" : "#12151c"
-      border.color: root.isPlaying ? "#1db954" : "#2a3447"
+      color: root.isPlaying ? (root.isChefExpanded ? "#221db954" : "#141db954") : "#12151c"
+      border.color: root.isPlaying ? "#1db954" : (root.isChefExpanded ? "#1db95488" : "#2a3447")
       border.width: 1
       visible: root.hasMedia
 
       Behavior on color { ColorAnimation { duration: 200 } }
       Behavior on border.color { ColorAnimation { duration: 200 } }
 
+      // Hover Handler to trigger expansion on hover
+      HoverHandler {
+        id: capsuleHover
+        onHoveredChanged: {
+          root.hoverExpanded = hovered
+        }
+      }
+
       Row {
         id: mediaInner
         anchors.centerIn: parent
-        spacing: Style.space(6)
+        spacing: Style.space(5)
 
-        // 1. Main Info Area (Icon + Equalizer + Title + Artist) - Click opens popup
+        // 1. Left-anchored Compact Info Area (Spotify Icon + Equalizer + Title + Artist + Expand Chevron)
         Item {
-          id: mediaInfoArea
+          id: compactInfoArea
           anchors.verticalCenter: parent.verticalCenter
-          implicitWidth: mediaInfoRow.implicitWidth
-          implicitHeight: mediaInfoRow.implicitHeight
+          implicitWidth: compactInfoRow.implicitWidth
+          implicitHeight: compactInfoRow.implicitHeight
 
           Row {
-            id: mediaInfoRow
+            id: compactInfoRow
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(5)
 
@@ -450,11 +482,21 @@ BarWidget {
 
               Text {
                 anchors.centerIn: parent
-                text: root.getSourceIcon(root.activePlayer ? root.activePlayer.identity : "")
+                text: root.getSourceIcon(root.manualSelectedPlayerName || (root.activePlayer ? root.activePlayer.identity : ""))
                 color: root.isPlaying ? "#000000" : "#8a94a6"
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: 10
                 font.bold: true
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.turboPopupOpen = false
+                  root.mediaPopupOpen = !root.mediaPopupOpen
+                }
               }
             }
 
@@ -486,7 +528,7 @@ BarWidget {
               font.bold: root.isPlaying
               elide: Text.ElideRight
               maximumLineCount: 1
-              width: Math.min(implicitWidth, 135)
+              width: Math.min(implicitWidth, 130)
               anchors.verticalCenter: parent.verticalCenter
             }
 
@@ -498,19 +540,35 @@ BarWidget {
               font.pixelSize: Style.font.caption
               elide: Text.ElideRight
               visible: root.artist !== ""
-              width: Math.min(implicitWidth, 75)
+              width: Math.min(implicitWidth, 70)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            // Expand / Pin Chevron Indicator (< / >)
+            Text {
+              text: root.pinned ? "󰐃" : (root.isChefExpanded ? "\uf053" : "\uf054")
+              color: root.pinned ? "#1db954" : (root.isChefExpanded ? "#1db954" : "#64748b")
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: 8
               anchors.verticalCenter: parent.verticalCenter
             }
           }
 
           MouseArea {
-            id: mediaInfoMouse
+            id: infoClickArea
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: {
-              root.turboPopupOpen = false
-              root.mediaPopupOpen = !root.mediaPopupOpen
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            onClicked: (mouse) => {
+              if (mouse.button === Qt.LeftButton) {
+                // Click to toggle Pin state
+                root.pinned = !root.pinned
+              } else if (mouse.button === Qt.RightButton) {
+                // Right click opens Audio Hub popup
+                root.turboPopupOpen = false
+                root.mediaPopupOpen = !root.mediaPopupOpen
+              }
             }
             onWheel: (wheel) => {
               if (wheel.angleDelta.y > 0) root.seekOffset(5)
@@ -519,90 +577,117 @@ BarWidget {
           }
         }
 
-        // Subtle Divider
-        Rectangle {
-          width: 1
-          height: Style.space(10)
-          color: "#2a3447"
+        // 2. Sliding Drawer Container (Reveals towards right into the bar)
+        Item {
+          id: chefDrawerClip
           anchors.verticalCenter: parent.verticalCenter
-        }
+          width: Math.round(chefDrawerRow.implicitWidth * root.chefRevealProgress)
+          height: parent.height
+          clip: true
 
-        // 2. Clickable Inline Control Buttons
-        Row {
-          id: inlineButtons
-          spacing: Style.space(3)
-          anchors.verticalCenter: parent.verticalCenter
-
-          // Prev Button
-          Rectangle {
-            width: Style.space(16)
-            height: Style.space(16)
-            radius: width / 2
-            color: prevInlineMouse.containsMouse ? "#251db954" : "transparent"
+          Row {
+            id: chefDrawerRow
             anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(5)
+            layer.enabled: true
 
-            Text {
-              anchors.centerIn: parent
-              text: "⏮"
-              color: prevInlineMouse.containsMouse ? "#1db954" : "#94a3b8"
-              font.pixelSize: 8
+            // Subtle Divider Line
+            Rectangle {
+              width: 1
+              height: Style.space(12)
+              color: "#2a3447"
+              anchors.verticalCenter: parent.verticalCenter
             }
 
-            MouseArea {
-              id: prevInlineMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.skipPrev()
-            }
-          }
+            // Prev Button
+            Rectangle {
+              width: Style.space(18)
+              height: Style.space(18)
+              radius: 9
+              color: prevInlineMouse.containsMouse ? "#251db954" : "transparent"
+              anchors.verticalCenter: parent.verticalCenter
 
-          // Play / Pause Button
-          Rectangle {
-            width: Style.space(18)
-            height: Style.space(18)
-            radius: width / 2
-            color: playInlineMouse.containsMouse ? "#1ed760" : "#1db954"
-            anchors.verticalCenter: parent.verticalCenter
+              Text {
+                anchors.centerIn: parent
+                text: "⏮"
+                color: prevInlineMouse.containsMouse ? "#1db954" : "#cbd5e1"
+                font.pixelSize: 9
+              }
 
-            Text {
-              anchors.centerIn: parent
-              text: root.isPlaying ? "⏸" : "▶"
-              color: "#000000"
-              font.pixelSize: 8
-              font.bold: true
-            }
-
-            MouseArea {
-              id: playInlineMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.togglePlay()
-            }
-          }
-
-          // Next Button
-          Rectangle {
-            width: Style.space(16)
-            height: Style.space(16)
-            radius: width / 2
-            color: nextInlineMouse.containsMouse ? "#251db954" : "transparent"
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              anchors.centerIn: parent
-              text: "⏭"
-              color: nextInlineMouse.containsMouse ? "#1db954" : "#94a3b8"
-              font.pixelSize: 8
+              MouseArea {
+                id: prevInlineMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.skipPrev()
+              }
             }
 
-            MouseArea {
-              id: nextInlineMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.skipNext()
+            // Play / Pause Button
+            Rectangle {
+              width: Style.space(20)
+              height: Style.space(20)
+              radius: 10
+              color: playInlineMouse.containsMouse ? "#1ed760" : "#1db954"
+              anchors.verticalCenter: parent.verticalCenter
+
+              Text {
+                anchors.centerIn: parent
+                text: root.isPlaying ? "⏸" : "▶"
+                color: "#000000"
+                font.pixelSize: 9
+                font.bold: true
+              }
+
+              MouseArea {
+                id: playInlineMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.togglePlay()
+              }
+            }
+
+            // Next Button
+            Rectangle {
+              width: Style.space(18)
+              height: Style.space(18)
+              radius: 9
+              color: nextInlineMouse.containsMouse ? "#251db954" : "transparent"
+              anchors.verticalCenter: parent.verticalCenter
+
+              Text {
+                anchors.centerIn: parent
+                text: "⏭"
+                color: nextInlineMouse.containsMouse ? "#1db954" : "#cbd5e1"
+                font.pixelSize: 9
+              }
+
+              MouseArea {
+                id: nextInlineMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.skipNext()
+              }
+            }
+
+            // Compact Mini Live Time Pill
+            Rectangle {
+              height: Style.space(16)
+              implicitWidth: timeText.implicitWidth + Style.space(8)
+              radius: 8
+              color: "#18202d"
+              anchors.verticalCenter: parent.verticalCenter
+
+              Text {
+                id: timeText
+                anchors.centerIn: parent
+                text: root.formatTime(root.positionSec) + " / " + root.formatTime(root.lengthSec)
+                color: "#94a3b8"
+                font.pixelSize: 8
+                font.bold: true
+              }
             }
           }
         }
