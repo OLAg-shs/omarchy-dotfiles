@@ -95,39 +95,6 @@ BarWidget {
     running: false
   }
 
-  function togglePlay() {
-    if (root.mediaService && root.activePlayer) {
-      root.mediaService.runAction("playPause", false, MediaModel.playerKey(root.activePlayer))
-    } else if (root.activePlayer && typeof root.activePlayer.togglePlaying === "function") {
-      root.activePlayer.togglePlaying()
-    } else {
-      playerctlProc.command = ["/home/chef_carthy/.local/bin/playerctl", "play-pause"]
-      playerctlProc.running = true
-    }
-  }
-
-  function skipNext() {
-    if (root.mediaService && root.activePlayer) {
-      root.mediaService.runAction("next", false, MediaModel.playerKey(root.activePlayer))
-    } else if (root.activePlayer && typeof root.activePlayer.next === "function") {
-      root.activePlayer.next()
-    } else {
-      playerctlProc.command = ["/home/chef_carthy/.local/bin/playerctl", "next"]
-      playerctlProc.running = true
-    }
-  }
-
-  function skipPrev() {
-    if (root.mediaService && root.activePlayer) {
-      root.mediaService.runAction("previous", false, MediaModel.playerKey(root.activePlayer))
-    } else if (root.activePlayer && typeof root.activePlayer.previous === "function") {
-      root.activePlayer.previous()
-    } else {
-      playerctlProc.command = ["/home/chef_carthy/.local/bin/playerctl", "previous"]
-      playerctlProc.running = true
-    }
-  }
-
   property real livePosition: 0.0
   property real liveDuration: 0.0
   property string liveTitle: ""
@@ -135,6 +102,54 @@ BarWidget {
   property string liveArtUrl: ""
   property var livePlayers: []
   property string manualSelectedPlayerKey: ""
+  property string manualSelectedPlayerName: ""
+
+  function refreshPosProc() {
+    var cmd = ["/home/chef_carthy/.local/bin/playerctl"]
+    if (root.manualSelectedPlayerName) {
+      cmd.push("-p")
+      cmd.push(root.manualSelectedPlayerName)
+    }
+    cmd.push("--json")
+    posProc.command = cmd
+    posProc.running = true
+  }
+
+  function togglePlay() {
+    var cmd = ["/home/chef_carthy/.local/bin/playerctl"]
+    if (root.manualSelectedPlayerName) {
+      cmd.push("-p")
+      cmd.push(root.manualSelectedPlayerName)
+    }
+    cmd.push("play-pause")
+    playerctlProc.command = cmd
+    playerctlProc.running = true
+    posPollTimer.restart()
+  }
+
+  function skipNext() {
+    var cmd = ["/home/chef_carthy/.local/bin/playerctl"]
+    if (root.manualSelectedPlayerName) {
+      cmd.push("-p")
+      cmd.push(root.manualSelectedPlayerName)
+    }
+    cmd.push("next")
+    playerctlProc.command = cmd
+    playerctlProc.running = true
+    posPollTimer.restart()
+  }
+
+  function skipPrev() {
+    var cmd = ["/home/chef_carthy/.local/bin/playerctl"]
+    if (root.manualSelectedPlayerName) {
+      cmd.push("-p")
+      cmd.push(root.manualSelectedPlayerName)
+    }
+    cmd.push("previous")
+    playerctlProc.command = cmd
+    playerctlProc.running = true
+    posPollTimer.restart()
+  }
 
   Timer {
     id: posPollTimer
@@ -142,7 +157,7 @@ BarWidget {
     running: true
     repeat: true
     triggeredOnStart: true
-    onTriggered: if (!posProc.running) posProc.running = true
+    onTriggered: if (!posProc.running) root.refreshPosProc()
   }
 
   Process {
@@ -183,14 +198,28 @@ BarWidget {
 
   function seekOffset(seconds) {
     root.livePosition = Math.max(0.0, root.livePosition + seconds)
-    playerctlProc.command = ["/home/chef_carthy/.local/bin/playerctl", "position", String(seconds)]
+    var cmd = ["/home/chef_carthy/.local/bin/playerctl"]
+    if (root.manualSelectedPlayerName) {
+      cmd.push("-p")
+      cmd.push(root.manualSelectedPlayerName)
+    }
+    cmd.push("position")
+    cmd.push(String(seconds))
+    playerctlProc.command = cmd
     playerctlProc.running = true
     posPollTimer.restart()
   }
 
   function seekTo(targetSeconds) {
     root.livePosition = targetSeconds
-    playerctlProc.command = ["/home/chef_carthy/.local/bin/playerctl", "set-position", String(targetSeconds)]
+    var cmd = ["/home/chef_carthy/.local/bin/playerctl"]
+    if (root.manualSelectedPlayerName) {
+      cmd.push("-p")
+      cmd.push(root.manualSelectedPlayerName)
+    }
+    cmd.push("set-position")
+    cmd.push(String(targetSeconds))
+    playerctlProc.command = cmd
     playerctlProc.running = true
     posPollTimer.restart()
   }
@@ -700,25 +729,30 @@ BarWidget {
         id: themeMouse
         anchors.fill: parent
         hoverEnabled: true
-        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
         cursorShape: Qt.PointingHandCursor
 
         onClicked: (mouse) => {
           if (mouse.button === Qt.LeftButton) {
-            wallProc.command = ["/home/chef_carthy/.local/bin/omarchy-walltheme", "auto", "next"]
+            wallProc.command = ["/usr/share/omarchy/bin/omarchy-theme-switcher"]
             wallProc.running = true
           } else if (mouse.button === Qt.RightButton) {
             wallProc.command = ["omarchy", "theme", "bg-switcher"]
             wallProc.running = true
+          } else if (mouse.button === Qt.MiddleButton) {
+            wallProc.command = ["/home/chef_carthy/.local/bin/omarchy-theme-cycle"]
+            wallProc.running = true
           }
+        }
+
+        onWheel: (wheel) => {
+          wallProc.command = ["/home/chef_carthy/.local/bin/omarchy-theme-cycle"]
+          wallProc.running = true
         }
       }
     }
   }
 
-  // -------------------------------------------------------------
-  // POPUP 1: SPOTIFY GLASS PLAYER CARD & 1-CLICK TAB SWITCHER
-  // -------------------------------------------------------------
   // -------------------------------------------------------------
   // POPUP 1: SPOTIFY PREMIUM GLASS AUDIO HUB & SOURCE SWITCHER
   // -------------------------------------------------------------
@@ -885,14 +919,14 @@ BarWidget {
                 anchors.centerIn: parent
                 spacing: 4
                 Text {
-                  text: root.getSourceIcon(root.activePlayer ? root.activePlayer.identity : "")
+                  text: root.getSourceIcon(root.manualSelectedPlayerName || (root.activePlayer ? root.activePlayer.identity : ""))
                   color: "#1db954"
                   font.pixelSize: 9
                   anchors.verticalCenter: parent.verticalCenter
                 }
                 Text {
                   id: sourceTagText
-                  text: root.activePlayer ? (root.activePlayer.identity || "Media Source") : "Audio"
+                  text: root.manualSelectedPlayerName || (root.activePlayer ? (root.activePlayer.identity || "Media Source") : "Audio")
                   color: "#71717a"
                   font.pixelSize: 9
                   anchors.verticalCenter: parent.verticalCenter
@@ -909,33 +943,41 @@ BarWidget {
         spacing: Style.space(4)
         visible: root.hasMedia
 
-        Rectangle {
-          id: progressBarTrack
+        Item {
           width: parent.width
-          height: (progressMouse.containsMouse || progressMouse.pressed) ? 6 : 4
-          radius: height / 2
-          color: "#282828"
-
-          Behavior on height { NumberAnimation { duration: 120 } }
+          height: 14
 
           Rectangle {
-            id: progressFill
-            width: root.lengthSec > 0 ? parent.width * Math.min(1.0, root.positionSec / root.lengthSec) : (root.isPlaying ? parent.width * 0.4 : 0)
-            height: parent.height
-            radius: parent.radius
-            color: (progressMouse.containsMouse || progressMouse.pressed) ? "#1ed760" : "#1db954"
+            id: progressBarTrack
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width
+            height: (progressMouse.containsMouse || progressMouse.pressed) ? 6 : 4
+            radius: height / 2
+            color: "#282828"
 
-            // Circular Scrubber Knob
+            Behavior on height { NumberAnimation { duration: 120 } }
+
             Rectangle {
-              width: 12
-              height: 12
-              radius: 6
-              color: "#ffffff"
-              anchors.verticalCenter: parent.verticalCenter
-              anchors.right: parent.right
-              anchors.rightMargin: -6
-              visible: progressMouse.containsMouse || progressMouse.pressed
+              id: progressFill
+              width: root.lengthSec > 0 ? parent.width * Math.min(1.0, root.positionSec / root.lengthSec) : (root.isPlaying ? parent.width * 0.4 : 0)
+              height: parent.height
+              radius: parent.radius
+              color: (progressMouse.containsMouse || progressMouse.pressed) ? "#1ed760" : "#1db954"
             }
+          }
+
+          // Circular Scrubber Knob
+          Rectangle {
+            id: scrubberKnob
+            width: 12
+            height: 12
+            radius: 6
+            color: "#ffffff"
+            border.color: "#00000033"
+            border.width: 1
+            anchors.verticalCenter: parent.verticalCenter
+            x: Math.max(0, Math.min(parent.width - width, (root.lengthSec > 0 ? parent.width * Math.min(1.0, root.positionSec / root.lengthSec) : 0) - width / 2))
+            visible: progressMouse.containsMouse || progressMouse.pressed
           }
 
           MouseArea {
@@ -982,33 +1024,33 @@ BarWidget {
         }
       }
 
-      // 4. Cohesive Playback Control Cluster
+      // 4. Cohesive Playback Control Cluster (Tightened Grouping)
       Rectangle {
-        width: Style.space(200)
-        height: Style.space(48)
-        radius: 24
-        color: "#121620"
-        border.color: "#1f2937"
+        width: Style.space(140)
+        height: Style.space(46)
+        radius: 23
+        color: "#141924"
+        border.color: "#222c3c"
         border.width: 1
         anchors.horizontalCenter: parent.horizontalCenter
         visible: root.hasMedia
 
         Row {
           anchors.centerIn: parent
-          spacing: Style.space(16)
+          spacing: Style.space(6)
 
           // Previous Track
           Rectangle {
-            width: Style.space(34)
-            height: Style.space(34)
-            radius: 17
-            color: prevMouse.containsMouse ? "#222c3c" : "transparent"
+            width: Style.space(32)
+            height: Style.space(32)
+            radius: 16
+            color: prevMouse.containsMouse ? "#242f40" : "transparent"
             anchors.verticalCenter: parent.verticalCenter
 
             Text {
               anchors.centerIn: parent
               text: "⏮"
-              color: prevMouse.containsMouse ? "#1db954" : "#ffffff"
+              color: prevMouse.containsMouse ? "#1db954" : "#cbd5e1"
               font.pixelSize: 13
             }
             MouseArea {
@@ -1022,9 +1064,9 @@ BarWidget {
 
           // Center Big Play/Pause FAB
           Rectangle {
-            width: Style.space(44)
-            height: Style.space(44)
-            radius: 22
+            width: Style.space(40)
+            height: Style.space(40)
+            radius: 20
             color: playMouse.containsMouse ? "#1ed760" : "#1db954"
             anchors.verticalCenter: parent.verticalCenter
 
@@ -1032,7 +1074,7 @@ BarWidget {
               anchors.centerIn: parent
               text: root.isPlaying ? "⏸" : "▶"
               color: "#000000"
-              font.pixelSize: 16
+              font.pixelSize: 15
               font.bold: true
             }
             MouseArea {
@@ -1046,16 +1088,16 @@ BarWidget {
 
           // Next Track
           Rectangle {
-            width: Style.space(34)
-            height: Style.space(34)
-            radius: 17
-            color: nextMouse.containsMouse ? "#222c3c" : "transparent"
+            width: Style.space(32)
+            height: Style.space(32)
+            radius: 16
+            color: nextMouse.containsMouse ? "#242f40" : "transparent"
             anchors.verticalCenter: parent.verticalCenter
 
             Text {
               anchors.centerIn: parent
               text: "⏭"
-              color: nextMouse.containsMouse ? "#1db954" : "#ffffff"
+              color: nextMouse.containsMouse ? "#1db954" : "#cbd5e1"
               font.pixelSize: 13
             }
             MouseArea {
@@ -1074,7 +1116,7 @@ BarWidget {
         id: tabSourceList
         width: parent.width
         spacing: Style.space(6)
-        visible: root.sourcePlayers && root.sourcePlayers.length > 0
+        visible: (root.livePlayers && root.livePlayers.length > 0) || (root.sourcePlayers && root.sourcePlayers.length > 0)
 
         Rectangle {
           width: parent.width
@@ -1090,7 +1132,7 @@ BarWidget {
             font.pixelSize: 11
           }
           Text {
-            text: "ACTIVE TABS & PLAYERS (" + root.sourcePlayers.length + ")"
+            text: "ACTIVE TABS & PLAYERS (" + (root.livePlayers.length > 0 ? root.livePlayers.length : (root.sourcePlayers ? root.sourcePlayers.length : 0)) + ")"
             color: "#94a3b8"
             font.pixelSize: 10
             font.bold: true
@@ -1099,15 +1141,18 @@ BarWidget {
         }
 
         Repeater {
-          model: root.sourcePlayers
+          model: root.livePlayers.length > 0 ? root.livePlayers : root.sourcePlayers
 
           Rectangle {
             id: tabRow
             required property var modelData
             readonly property var pItem: modelData
-            readonly property bool isSelected: root.activePlayer && pItem
-              && MediaModel.playerKey(root.activePlayer) === MediaModel.playerKey(pItem)
-            readonly property bool isThisPlaying: pItem && (pItem.isPlaying || pItem.playbackState === MprisPlaybackState.Playing)
+            readonly property string pName: pItem ? (pItem.name || MediaModel.playerKey(pItem) || "") : ""
+            readonly property string pTitle: pItem ? (pItem.title || pItem.trackTitle || pName || "Audio Tab") : "Media"
+            readonly property string pArtist: pItem ? (pItem.artist || pItem.trackArtist || pName || "") : ""
+            readonly property bool isSelected: (root.manualSelectedPlayerName && root.manualSelectedPlayerName === pName) ||
+                                               (!root.manualSelectedPlayerName && isThisPlaying)
+            readonly property bool isThisPlaying: pItem ? (pItem.status === "Playing" || pItem.isPlaying || pItem.playbackState === MprisPlaybackState.Playing) : false
 
             width: tabSourceList.width
             height: Style.space(42)
@@ -1116,7 +1161,7 @@ BarWidget {
             border.color: isSelected ? "#1db954" : (rowMouse.containsMouse ? "#334155" : "#1e293b")
             border.width: 1
 
-            // Selection Mouse Area (covers left & center)
+            // Selection Mouse Area (covers whole left area)
             MouseArea {
               id: rowMouse
               anchors.fill: parent
@@ -1124,11 +1169,13 @@ BarWidget {
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
               onClicked: {
-                if (tabRow.pItem) {
-                  root.manualSelectedPlayerKey = MediaModel.playerKey(tabRow.pItem)
+                if (tabRow.pName) {
+                  root.manualSelectedPlayerName = tabRow.pName
+                  root.manualSelectedPlayerKey = tabRow.pName
                   if (root.mediaService) {
-                    root.mediaService.selectPlayer(MediaModel.playerKey(tabRow.pItem))
+                    root.mediaService.selectPlayer(tabRow.pName)
                   }
+                  root.refreshPosProc()
                 }
               }
             }
@@ -1140,7 +1187,7 @@ BarWidget {
               spacing: Style.space(8)
 
               Text {
-                text: root.getSourceIcon(tabRow.pItem ? tabRow.pItem.identity : "")
+                text: root.getSourceIcon(tabRow.pName)
                 color: tabRow.isSelected ? "#1db954" : "#94a3b8"
                 font.pixelSize: 14
                 anchors.verticalCenter: parent.verticalCenter
@@ -1152,7 +1199,7 @@ BarWidget {
                 anchors.verticalCenter: parent.verticalCenter
 
                 Text {
-                  text: tabRow.pItem ? (tabRow.pItem.trackTitle || tabRow.pItem.identity || "Media Tab") : "Active Tab"
+                  text: tabRow.pTitle
                   color: tabRow.isSelected ? "#ffffff" : "#cbd5e1"
                   font.pixelSize: 11
                   font.bold: tabRow.isSelected
@@ -1161,7 +1208,7 @@ BarWidget {
                 }
 
                 Text {
-                  text: tabRow.pItem && tabRow.pItem.trackArtist ? tabRow.pItem.trackArtist : (tabRow.pItem ? (tabRow.pItem.identity || "Browser Audio") : "Ready")
+                  text: tabRow.pArtist !== "" ? tabRow.pArtist : "Audio Source"
                   color: "#64748b"
                   font.pixelSize: 9
                   elide: Text.ElideRight
@@ -1169,7 +1216,7 @@ BarWidget {
                 }
               }
 
-              // Direct 1-Click Play/Pause on this Tab
+              // Direct 1-Click Play/Pause on this Tab/Player
               Rectangle {
                 width: Style.space(26)
                 height: Style.space(26)
@@ -1190,10 +1237,10 @@ BarWidget {
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
                   onClicked: {
-                    if (root.mediaService && tabRow.pItem) {
-                      root.mediaService.runAction("playPause", false, MediaModel.playerKey(tabRow.pItem))
-                    } else if (tabRow.pItem && typeof tabRow.pItem.togglePlaying === "function") {
-                      tabRow.pItem.togglePlaying()
+                    if (tabRow.pName) {
+                      playerctlProc.command = ["/home/chef_carthy/.local/bin/playerctl", "-p", tabRow.pName, "play-pause"]
+                      playerctlProc.running = true
+                      posPollTimer.restart()
                     }
                   }
                 }
