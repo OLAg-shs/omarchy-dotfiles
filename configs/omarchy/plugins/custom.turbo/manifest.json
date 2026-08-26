@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "custom.turbo",
+  "name": "Omarchy Turbo Telemetry HUD",
+  "version": "1.0.0",
+  "author": "Maccarthy Quest",
+  "description": "Live thermal, CPU speed & RAM telemetry bar widget and control center",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Turbo Telemetry HUD",
+    "description": "Live CPU thermals, RAM & Turbo mode control center",
+    "category": "System",
+    "allowMultiple": false
+  }
+}

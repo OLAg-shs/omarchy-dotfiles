@@ -1,8 +1,14 @@
 {
   "enabled": true,
-  "interval_seconds": 600,
+  "interval_seconds": 300,
   "mode": "sequential",
   "dynamic_theme": true,
   "wallpapers": [],
-  "last_index": 0
+  "last_index": 0,
+  "wallpaper_dirs": [
+    "/home/chef_carthy/Downloads/wallpapers",
+    "/home/chef_carthy/wallpaper",
+    "/home/chef_carthy/wallpaer",
+    "/home/chef_carthy/Pictures/wallpaper"
+  ]
 }

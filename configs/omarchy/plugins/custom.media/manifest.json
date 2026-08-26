@@ -1,20 +1,22 @@
 {
   "schemaVersion": 1,
   "id": "custom.media",
-  "name": "Spotify Flow",
-  "version": "1.0.0",
+  "name": "Spotify Glass Player",
+  "version": "2.0.0",
   "author": "Maccarthy Quest",
-  "description": "Spotify-themed audio controller & multi-tab switcher for Omarchy",
+  "description": "Spotify Glass MPRIS media player with multi-tab audio switcher",
   "kinds": [
+    "service",
     "bar-widget"
   ],
   "keepLoaded": true,
   "entryPoints": {
+    "service": "Service.qml",
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Spotify Flow",
-    "description": "Spotify-themed audio controller with tab switching deck",
+    "displayName": "Spotify Glass Player",
+    "description": "Sleek animated Spotify media capsule and popout card",
     "category": "Media",
     "allowMultiple": false
   }

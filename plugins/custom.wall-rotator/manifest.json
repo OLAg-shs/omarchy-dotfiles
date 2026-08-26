@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "id": "custom.wall-rotator",
-  "name": "Wallpaper Rotator",
+  "name": "Omarchy Wallpaper Rotator & Themer",
   "version": "1.0.0",
-  "author": "chef_carthy",
-  "description": "Automated wallpaper rotator and theme controller for Omarchy",
+  "author": "Maccarthy Quest",
+  "description": "1-click wallpaper cycler and harmonic color palette generator",
   "kinds": [
     "service",
     "bar-widget"
@@ -16,7 +16,7 @@
   },
   "barWidget": {
     "displayName": "Wallpaper Rotator",
-    "description": "Click to cycle wallpaper, right-click to open switcher",
+    "description": "1-click wallpaper cycler and visual background picker",
     "category": "Appearance",
     "allowMultiple": false
   }
