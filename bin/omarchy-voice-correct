@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""
+Omarchy Smart Voice & Speech Text Corrector Engine
+Cleans, fixes grammar, capitalizes, punctuates, removes filler words,
+and formats speech-to-text transcriptions with zero latency.
+"""
+
+import sys
+import os
+import re
+import json
+from pathlib import Path
+
+STATE_DIR = Path.home() / ".local" / "state" / "omarchy"
+VOICE_STATE_FILE = STATE_DIR / "voice_state.json"
+
+# Common vocal filler words and stumbles to prune
+FILLER_PATTERNS = [
+    r'\b(?:uh|um|umm|uhh|er|err|ah|ahh)\b[\s,]*',
+    r'\b(?:you know|I mean|sort of|kind of)\b[\s,]*',
+    r'^[,\s]+',
+]
+
+# Spoken punctuation mapping
+SPOKEN_PUNCTUATION = [
+    (r'\b(?:period|full stop)\b', '.'),
+    (r'\b(?:comma)\b', ','),
+    (r'\b(?:question mark)\b', '?'),
+    (r'\b(?:exclamation mark|exclamation point)\b', '!'),
+    (r'\b(?:colon)\b', ':'),
+    (r'\b(?:semicolon)\b', ';'),
+    (r'\b(?:new line|newline|next line)\b', '\n'),
+    (r'\b(?:new paragraph)\b', '\n\n'),
+    (r'\b(?:open quote|begin quote)\b', '"'),
+    (r'\b(?:close quote|end quote)\b', '"'),
+]
+
+# Tech words and proper nouns to capitalize/fix
+TECH_REPLACEMENTS = {
+    r'\barch linux\b': 'Arch Linux',
+    r'\bhyprland\b': 'Hyprland',
+    r'\bhyperland\b': 'Hyprland',
+    r'\bomarchy\b': 'Omarchy',
+    r'\bom archy\b': 'Omarchy',
+    r'\bchef carthy\b': 'Chef Carthy',
+    r'\bchef kathy\b': 'Chef Carthy',
+    r'\bchef cathy\b': 'Chef Carthy',
+    r'\bmac carthy\b': 'Maccarthy',
+    r'\bmaccarthy\b': 'Maccarthy',
+    r'\bquickshell\b': 'Quickshell',
+    r'\bquick shell\b': 'Quickshell',
+    r'\bgithub\b': 'GitHub',
+    r'\bgit hub\b': 'GitHub',
+    r'\bwayland\b': 'Wayland',
+    r'\bway land\b': 'Wayland',
+    r'\bspotify\b': 'Spotify',
+    r'\bneovim\b': 'Neovim',
+    r'\bpython\b': 'Python',
+    r'\bjavascript\b': 'JavaScript',
+    r'\btypescript\b': 'TypeScript',
+    r'\brust\b': 'Rust',
+    r'\bdocker\b': 'Docker',
+    r'\bpacman\b': 'pacman',
+    r'\bsystemd\b': 'systemd',
+    r'\bvoxtype\b': 'Voxtype',
+    r'\bwhisper\b': 'Whisper',
+    r'\bdotfiles\b': 'dotfiles',
+    r'\bdot files\b': 'dotfiles',
+}
+
+# Common grammar / speech confusion replacements
+GRAMMAR_FIXES = [
+    # Repeated consecutive words: "the the", "I I", "that that", "to to"
+    (r'\b(\w+)\s+\1\b', r'\1'),
+    (r'\b(\w+)\s+\1\b', r'\1'),
+    # Contractions & capitalization
+    (r"\bi\b", "I"),
+    (r"\bi'm\b", "I'm"),
+    (r"\bi've\b", "I've"),
+    (r"\bi'll\b", "I'll"),
+    (r"\bi'd\b", "I'd"),
+    (r"\bdont\b", "don't"),
+    (r"\bcant\b", "can't"),
+    (r"\bwont\b", "won't"),
+    (r"\bdoesnt\b", "doesn't"),
+    (r"\bisnt\b", "isn't"),
+    (r"\barent\b", "aren't"),
+    (r"\bwasnt\b", "wasn't"),
+    (r"\bwerent\b", "weren't"),
+    (r"\bhavent\b", "haven't"),
+    (r"\bhasnt\b", "hasn't"),
+    (r"\bhadnt\b", "hadn't"),
+    (r"\bcouldnt\b", "couldn't"),
+    (r"\bshouldnt\b", "shouldn't"),
+    (r"\bwouldnt\b", "wouldn't"),
+    (r"\bthats\b", "that's"),
+    (r"\bwhats\b", "what's"),
+    (r"\bheres\b", "here's"),
+    (r"\btheres\b", "there's"),
+    (r"\blets\b", "let's"),
+    (r"\byoure\b", "you're"),
+    (r"\btheyre\b", "they're"),
+    (r"\bweve\b", "we've"),
+    (r"\btheyve\b", "they've"),
+]
+
+QUESTION_STARTERS = {
+    "who", "what", "when", "where", "why", "how", "which",
+    "can", "could", "would", "should", "will", "shall",
+    "is", "are", "am", "was", "were",
+    "do", "does", "did", "have", "has", "had"
+}
+
+def clean_and_correct(text: str, mode: str = "autofix") -> str:
+    if not text or not text.strip():
+        return ""
+    
+    res = text.strip()
+    
+    # 1. Spoken punctuation substitution
+    for pat, repl in SPOKEN_PUNCTUATION:
+        res = re.sub(pat, repl, res, flags=re.IGNORECASE)
+    
+    # 2. Filler words removal
+    if mode != "raw":
+        for pat in FILLER_PATTERNS:
+            res = re.sub(pat, "", res, flags=re.IGNORECASE)
+        # Remove filler 'like' when used redundantly: "we were, like, doing" -> "we were doing"
+        res = re.sub(r'(?<=\w)\s+like,\s+', ' ', res, flags=re.IGNORECASE)
+        res = re.sub(r'^[,\s]+', '', res)
+    
+    # 3. Grammar and contraction fixes
+    for pat, repl in GRAMMAR_FIXES:
+        res = re.sub(pat, repl, res, flags=re.IGNORECASE)
+    
+    # 4. Tech words and proper nouns
+    for pat, repl in TECH_REPLACEMENTS.items():
+        res = re.sub(pat, repl, res, flags=re.IGNORECASE)
+    
+    # 5. Fix spaces around punctuation
+    res = re.sub(r'\s+([,.:;?!])', r'\1', res)
+    res = re.sub(r'([,.:;?!])([^\s\d"\'])', r'\1 \2', res)
+    res = re.sub(r'\s+', ' ', res)
+    
+    # 6. Sentence parsing & capitalization
+    # Split paragraphs first
+    paragraphs = res.split('\n')
+    formatted_paragraphs = []
+    
+    for p in paragraphs:
+        p = p.strip()
+        if not p:
+            formatted_paragraphs.append("")
+            continue
+        
+        # Split sentences roughly by existing delimiters or question starters
+        raw_sentences = re.split(r'([.!?]+)\s*', p)
+        rebuilt = []
+        i = 0
+        while i < len(raw_sentences):
+            s = raw_sentences[i].strip()
+            punct = ""
+            if i + 1 < len(raw_sentences):
+                punct = raw_sentences[i + 1].strip()
+                i += 2
+            else:
+                i += 1
+                
+            if not s:
+                continue
+                
+            # Capitalize start
+            s = s[0].upper() + s[1:]
+            
+            # Sub-check for questions inside sentence if without punct
+            if not punct:
+                words = s.split()
+                if words and words[0].lower() in QUESTION_STARTERS:
+                    punct = '?'
+                else:
+                    punct = '.'
+            rebuilt.append(s + punct)
+            
+        formatted_paragraphs.append(" ".join(rebuilt))
+        
+    res = "\n".join(formatted_paragraphs)
+    
+    # 7. Professional Mode expansions
+    if mode == "professional":
+        prof_replacements = [
+            (r"\bgonna\b", "going to"),
+            (r"\bwanna\b", "want to"),
+            (r"\bgotta\b", "must"),
+            (r"\bkinda\b", "rather"),
+            (r"\bya\b", "you"),
+            (r"\byep\b", "yes"),
+            (r"\bnope\b", "no"),
+        ]
+        for pat, repl in prof_replacements:
+            res = re.sub(pat, repl, res, flags=re.IGNORECASE)
+            
+    return res.strip()
+
+def save_voice_state(raw: str, corrected: str, mode: str):
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        data = {
+            "raw_text": raw,
+            "corrected_text": corrected,
+            "mode": mode,
+            "timestamp": int(__import__("time").time()),
+            "char_count": len(corrected),
+            "word_count": len(corrected.split()) if corrected else 0
+        }
+        with open(VOICE_STATE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+def main():
+    mode = "autofix"
+    args = sys.argv[1:]
+    
+    if "--mode" in args:
+        idx = args.index("--mode")
+        if idx + 1 < len(args):
+            mode = args[idx + 1]
+            args = args[:idx] + args[idx + 2:]
+            
+    if "--pipe" in args:
+        # Read from stdin (used by voxtype post_process)
+        raw_text = sys.stdin.read().strip()
+        corrected = clean_and_correct(raw_text, mode=mode)
+        save_voice_state(raw_text, corrected, mode)
+        sys.stdout.write(corrected)
+        sys.stdout.flush()
+        return
+
+    if "--get-state" in args:
+        if VOICE_STATE_FILE.exists():
+            with open(VOICE_STATE_FILE, "r") as f:
+                print(f.read())
+        else:
+            print(json.dumps({
+                "raw_text": "",
+                "corrected_text": "",
+                "mode": mode,
+                "timestamp": 0,
+                "char_count": 0,
+                "word_count": 0
+            }))
+        return
+
+    input_text = " ".join(args).strip()
+    if not input_text:
+        # Check stdin if available and not a tty
+        if not sys.stdin.isatty():
+            input_text = sys.stdin.read().strip()
+            
+    if not input_text:
+        print("Usage: omarchy-voice-correct [--mode autofix|professional|prompt|raw] [--pipe] [text]")
+        return
+
+    corrected = clean_and_correct(input_text, mode=mode)
+    save_voice_state(input_text, corrected, mode)
+    print(corrected)
+
+if __name__ == "__main__":
+    main()

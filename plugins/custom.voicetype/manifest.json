@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "custom.voicetype",
+  "name": "Omarchy Voice & Smart Corrector",
+  "version": "1.0.0",
+  "author": "Maccarthy Quest",
+  "description": "Voice-to-text dictation, live transcription, smart grammar corrector, copy and auto-typing HUD",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Voice & Smart Corrector",
+    "description": "Voice typing, live grammar cleanup, and 1-click clipboard & auto-typing",
+    "category": "Productivity",
+    "allowMultiple": false
+  }
+}

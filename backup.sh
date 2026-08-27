@@ -26,7 +26,7 @@ fi
 
 # 2. Custom Scripts & Binaries
 mkdir -p "$DOTFILES_DIR/bin"
-for bin_file in omarchy-storage-cleaner omarchy-turbo omarchy-turbo-gui omarchy-theme-cycle playerctl; do
+for bin_file in omarchy-storage-cleaner omarchy-voice omarchy-voice-correct omarchy-turbo omarchy-turbo-gui omarchy-theme-cycle playerctl; do
     if [ -f "$HOME/.local/bin/$bin_file" ]; then
         echo "  • Backing up ~/.local/bin/$bin_file..."
         cp "$HOME/.local/bin/$bin_file" "$DOTFILES_DIR/bin/"

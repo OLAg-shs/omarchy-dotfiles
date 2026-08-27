@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""
+Omarchy Voice Master Controller
+Orchestrates Voxtype speech recording, NLP grammar correction,
+Wayland clipboard integration, and active-window keyboard typing.
+"""
+
+import sys
+import os
+import json
+import time
+import subprocess
+from pathlib import Path
+
+STATE_DIR = Path.home() / ".local" / "state" / "omarchy"
+VOICE_STATE_FILE = STATE_DIR / "voice_state.json"
+VOXTYPE_STATE = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "voxtype" / "state"
+
+def get_voxtype_state():
+    if VOXTYPE_STATE.exists():
+        try:
+            with open(VOXTYPE_STATE, "r") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return "idle"
+
+def get_voice_data():
+    if VOICE_STATE_FILE.exists():
+        try:
+            with open(VOICE_STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "raw_text": "",
+        "corrected_text": "",
+        "mode": "autofix",
+        "timestamp": 0,
+        "char_count": 0,
+        "word_count": 0
+    }
+
+def save_voice_data(data: dict):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(VOICE_STATE_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def notify(title: str, message: str, icon: str = "🎙️"):
+    try:
+        subprocess.run([
+            "omarchy", "notification", "send",
+            "-g", icon,
+            "-u", "low",
+            title,
+            message
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+def toggle_record():
+    curr = get_voxtype_state()
+    try:
+        subprocess.run(["voxtype", "record", "toggle"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        new_state = "recording" if curr == "idle" else "transcribing"
+        return {"status": "success", "action": "toggle", "state": new_state}
+    except Exception as e:
+        # If voxtype daemon wasn't running, start it
+        try:
+            subprocess.run(["systemctl", "--user", "restart", "voxtype.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.3)
+            subprocess.run(["voxtype", "record", "start"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return {"status": "success", "action": "start_service", "state": "recording"}
+        except Exception as ex:
+            return {"status": "error", "error": str(ex)}
+
+def copy_to_clipboard(text: str = ""):
+    if not text:
+        data = get_voice_data()
+        text = data.get("corrected_text", "")
+    if not text:
+        return {"status": "error", "error": "No text to copy"}
+    try:
+        subprocess.run(["wl-copy", "--", text], check=True)
+        notify("Voice Text Copied", f"Copied {len(text)} characters to clipboard.", "📋")
+        return {"status": "success", "copied_length": len(text)}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+def type_into_active_window(text: str = ""):
+    if not text:
+        data = get_voice_data()
+        text = data.get("corrected_text", "")
+    if not text:
+        return {"status": "error", "error": "No text to type"}
+    try:
+        # Give focus a moment to switch back to the target window
+        time.sleep(0.15)
+        subprocess.run(["wtype", "--", text], check=True)
+        notify("Voice Typed", f"Typed {len(text)} characters into active window.", "⌨️")
+        return {"status": "success", "typed_length": len(text)}
+    except Exception as e:
+        # Fallback to wl-copy
+        copy_to_clipboard(text)
+        return {"status": "fallback_copy", "error": str(e)}
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: omarchy-voice [toggle|start|stop|status|copy|type|correct|state]")
+        return
+
+    cmd = sys.argv[1]
+
+    if cmd == "toggle":
+        print(json.dumps(toggle_record()))
+    elif cmd == "start":
+        subprocess.run(["voxtype", "record", "start"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(json.dumps({"status": "recording"}))
+    elif cmd == "stop":
+        subprocess.run(["voxtype", "record", "stop"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(json.dumps({"status": "transcribing"}))
+    elif cmd == "status":
+        state = get_voxtype_state()
+        data = get_voice_data()
+        print(json.dumps({
+            "record_state": state,
+            "voice_data": data
+        }, indent=2))
+    elif cmd == "copy":
+        text = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else ""
+        print(json.dumps(copy_to_clipboard(text)))
+    elif cmd == "type":
+        text = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else ""
+        print(json.dumps(type_into_active_window(text)))
+    elif cmd == "state":
+        print(json.dumps(get_voice_data(), indent=2))
+    elif cmd == "set-text":
+        text = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else ""
+        data = get_voice_data()
+        data["corrected_text"] = text
+        data["char_count"] = len(text)
+        data["word_count"] = len(text.split()) if text else 0
+        save_voice_data(data)
+        print(json.dumps({"status": "success", "text": text}))
+    else:
+        print(f"Unknown command: {cmd}")
+
+if __name__ == "__main__":
+    main()
