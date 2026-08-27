@@ -111,11 +111,25 @@ QUESTION_STARTERS = {
     "do", "does", "did", "have", "has", "had"
 }
 
+# Noise and silence hallucination patterns to filter out
+HALLUCINATION_PATTERNS = [
+    r'^(?:thank you(?: for watching)?\.?|thanks for watching\.?)$',
+    r'^(?:subtitles by.*|captioned by.*)$',
+    r'^(?:bye\.?|goodbye\.?|see you next time\.?)$',
+    r'^[\[\(].*?[\]\)]$',
+    r'^[\s.,!?;:\-_]+$'
+]
+
 def clean_and_correct(text: str, mode: str = "autofix") -> str:
     if not text or not text.strip():
         return ""
     
     res = text.strip()
+
+    # 0. Filter out silence/noise hallucinations
+    for pat in HALLUCINATION_PATTERNS:
+        if re.search(pat, res, flags=re.IGNORECASE):
+            return ""
     
     # 1. Spoken punctuation substitution
     for pat, repl in SPOKEN_PUNCTUATION:
