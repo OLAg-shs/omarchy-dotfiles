@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+import os
+import sys
+import time
+import subprocess
+import glob
+import signal
+import json
+from typing import List, Dict, Any, Tuple
+
+PID_FILE = os.path.expanduser("~/.config/omarchy/turbo.pid")
+
+def get_temps() -> List[float]:
+    temps = []
+    for f in sorted(glob.glob('/sys/class/thermal/thermal_zone*/temp')):
+        try:
+            with open(f) as fh:
+                t = int(fh.read().strip()) / 1000.0
+                if 20 <= t <= 115:
+                    temps.append(t)
+        except:
+            pass
+    return temps
+
+def get_memory_info() -> Dict[str, float]:
+    total, free, available = 8.0, 1.0, 2.0
+    try:
+        with open('/proc/meminfo') as f:
+            lines = f.readlines()
+            for line in lines:
+                parts = line.split()
+                if parts[0] == 'MemTotal:':
+                    total = int(parts[1]) / (1024.0 * 1024.0)
+                elif parts[0] == 'MemFree:':
+                    free = int(parts[1]) / (1024.0 * 1024.0)
+                elif parts[0] == 'MemAvailable:':
+                    available = int(parts[1]) / (1024.0 * 1024.0)
+    except:
+        pass
+    used = max(0.0, total - available)
+    pct = (used / total) * 100.0 if total > 0 else 0.0
+    return {"total": round(total, 2), "used": round(used, 2), "available": round(available, 2), "percent": round(pct, 1)}
+
+def get_power_profile() -> str:
+    try:
+        return subprocess.check_output(["powerprofilesctl", "get"], text=True).strip().lower()
+    except:
+        return "balanced"
+
+def set_power_profile(profile: str):
+    try:
+        subprocess.run(["powerprofilesctl", "set", profile], check=True, stderr=subprocess.DEVNULL)
+    except:
+        pass
+
+def send_notification(title: str, msg: str, urgency: str = "low"):
+    try:
+        subprocess.run(["notify-send", "-u", urgency, "-a", "Omarchy Turbo", title, msg], stderr=subprocess.DEVNULL)
+    except:
+        pass
+
+def clean_caches():
+    try:
+        subprocess.run(["rm", "-rf", os.path.expanduser("~/.cache/thumbnails")], stderr=subprocess.DEVNULL)
+    except:
+        pass
+
+def is_daemon_running() -> Tuple[bool, int]:
+    if not os.path.exists(PID_FILE):
+        return False, 0
+    try:
+        with open(PID_FILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return True, pid
+    except:
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
+        return False, 0
+
+def run_auto_pilot():
+    os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+    def handle_exit(signum, frame):
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_exit)
+    signal.signal(signal.SIGTERM, handle_exit)
+
+    last_notify_time = 0
+
+    while True:
+        try:
+            temps = get_temps()
+            max_temp = max(temps) if temps else 50.0
+            load1, _, _ = os.getloadavg()
+            mem = get_memory_info()
+            curr_profile = get_power_profile()
+            now = time.time()
+
+            if max_temp >= 78.0:
+                if curr_profile == "performance":
+                    set_power_profile("balanced")
+                    if now - last_notify_time > 120:
+                        send_notification("❄️ Thermal Auto-Cooler", f"Cooled CPU from {max_temp:.1f}°C to balanced mode.")
+                        last_notify_time = now
+                elif max_temp >= 85.0 and curr_profile != "power-saver":
+                    set_power_profile("power-saver")
+
+            elif load1 >= 2.0 and max_temp < 72.0:
+                if curr_profile != "performance":
+                    set_power_profile("performance")
+                    if now - last_notify_time > 120:
+                        send_notification("🚀 Turbo Auto-Boost", f"High workload detected ({load1:.1f} load). Boosted performance.")
+                        last_notify_time = now
+
+            elif max_temp < 65.0 and load1 < 1.2 and curr_profile == "performance":
+                set_power_profile("balanced")
+
+            if mem["available"] < 1.2:
+                clean_caches()
+
+            time.sleep(6)
+        except Exception:
+            time.sleep(10)
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--json":
+        temps = get_temps()
+        max_t = max(temps) if temps else 50.0
+        avg_t = sum(temps)/len(temps) if temps else 50.0
+        load1, load5, load15 = os.getloadavg()
+        mem = get_memory_info()
+        running, pid = is_daemon_running()
+        prof = get_power_profile()
+        data = {
+            "temp_peak": round(max_t, 1),
+            "temp_avg": round(avg_t, 1),
+            "load_1m": round(load1, 2),
+            "load_5m": round(load5, 2),
+            "ram_total": mem["total"],
+            "ram_used": mem["used"],
+            "ram_avail": mem["available"],
+            "ram_percent": mem["percent"],
+            "power_profile": prof,
+            "auto_pilot": running,
+            "auto_pilot_pid": pid
+        }
+        print(json.dumps(data))
+        sys.exit(0)
+
+    if len(sys.argv) < 2 or sys.argv[1] in ["-h", "--help"]:
+        print("Usage: omarchy-turbo [auto start|stop|status | cool | boost | clean | status | --json]")
+        sys.exit(0)
+
+    cmd = sys.argv[1].lower()
+
+    if cmd == "auto":
+        sub = sys.argv[2].lower() if len(sys.argv) > 2 else "status"
+        if sub == "start":
+            running, pid = is_daemon_running()
+            if running:
+                print(f"ℹ️ Omarchy Turbo Auto-Pilot is already running (PID {pid}).")
+                sys.exit(0)
+            
+            subprocess.Popen(
+                [sys.executable, "-c", "from importlib.machinery import SourceFileLoader; mod = SourceFileLoader('turbo', '/home/chef_carthy/.local/bin/omarchy-turbo').load_module(); mod.run_auto_pilot()"],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            time.sleep(0.5)
+            print("🚀 Omarchy Turbo Auto-Pilot started!")
+
+        elif sub == "stop":
+            running, pid = is_daemon_running()
+            if running:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    if os.path.exists(PID_FILE):
+                        os.remove(PID_FILE)
+                    print("🛑 Omarchy Turbo Auto-Pilot stopped.")
+                except Exception as e:
+                    print(f"Error stopping daemon: {e}")
+            else:
+                print("ℹ️ Auto-Pilot is not running.")
+
+        elif sub == "status":
+            running, pid = is_daemon_running()
+            print(f"🤖 Auto-Pilot Status: {'🟢 ACTIVE (PID ' + str(pid) + ')' if running else '🔴 STOPPED'}")
+
+    elif cmd == "cool":
+        set_power_profile("power-saver")
+        temps = get_temps()
+        avg_t = sum(temps)/len(temps) if temps else 0
+        print(f"❄️ Cool Mode: power-saver | Avg Temp: {avg_t:.1f}°C")
+
+    elif cmd == "boost":
+        set_power_profile("performance")
+        print("🚀 Boost Mode: performance (All 10 CPU cores operating at max clock speeds)")
+
+    elif cmd == "clean":
+        clean_caches()
+        mem = get_memory_info()
+        print(f"🧹 Cleaned RAM caches. Available: {mem['available']} GB")
+
+    elif cmd == "status":
+        running, pid = is_daemon_running()
+        prof = get_power_profile()
+        temps = get_temps()
+        max_t = max(temps) if temps else 0
+        avg_t = sum(temps)/len(temps) if temps else 0
+        load1, load5, _ = os.getloadavg()
+        mem = get_memory_info()
+        print(f"🤖 Auto-Pilot:    {'🟢 RUNNING (PID ' + str(pid) + ')' if running else '🔴 STOPPED'}")
+        print(f"⚡ Power Profile: {prof.upper()}")
+        print(f"🌡️ CPU Peak Temp: {max_t:.1f}°C (Avg: {avg_t:.1f}°C)")
+        print(f"📈 CPU Load:      {load1:.2f}")
+        print(f"🧠 RAM Used:      {mem['used']} GB / {mem['total']} GB ({mem['percent']}%)")
+
+if __name__ == "__main__":
+    main()

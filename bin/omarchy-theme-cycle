@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+import subprocess
+import sys
+
+try:
+    raw_list = subprocess.check_output(['omarchy', 'theme', 'list'], stderr=subprocess.DEVNULL).decode().splitlines()
+    themes = []
+    for line in raw_list:
+        t = line.strip()
+        if t and t not in themes:
+            themes.append(t)
+    themes.sort()
+    
+    current = subprocess.check_output(['omarchy', 'theme', 'current'], stderr=subprocess.DEVNULL).decode().strip()
+    
+    try:
+        idx = themes.index(current)
+        next_theme = themes[(idx + 1) % len(themes)]
+    except ValueError:
+        next_theme = themes[0]
+        
+    print(f"Switching theme from '{current}' -> '{next_theme}'")
+    subprocess.check_call(['omarchy', 'theme', 'set', next_theme])
+    print(f"✅ Active theme is now: '{next_theme}'")
+except Exception as e:
+    print(f"Error cycling theme: {e}", file=sys.stderr)
+    sys.exit(1)

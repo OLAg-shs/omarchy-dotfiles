@@ -1,0 +1,12 @@
+[Unit]
+Description=Omarchy Automated Wallpaper Rotator & Dynamic Themer
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/home/chef_carthy/.local/bin/omarchy-walltheme auto start --interval 10m
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

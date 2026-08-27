@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell
+import Quickshell.Hyprland
 import Quickshell.Io
 import Quickshell.Services.Mpris
 import qs.Ui
@@ -23,13 +24,6 @@ BarWidget {
   property real ramTotal: 7.5
   property string powerProfile: "balanced"
   property bool autoPilotActive: true
-  property bool mediaPopupOpen: false
-  property bool turboPopupOpen: false
-
-  function close() {
-    mediaPopupOpen = false
-    turboPopupOpen = false
-  }
 
   readonly property color tempColor: {
     if (tempPeak < 65) return "#10b981" // Cool Green
@@ -103,6 +97,74 @@ BarWidget {
   property var livePlayers: []
   property string manualSelectedPlayerKey: ""
   property string manualSelectedPlayerName: ""
+
+  // -------------------------------------------------------------
+  // STORAGE & CLEANER TELEMETRY
+  // -------------------------------------------------------------
+  property string diskTotalStr: "475 GB"
+  property string diskUsedStr: "47 GB"
+  property string diskFreeStr: "428 GB"
+  property real diskPercent: 10.0
+  property real userCleanableBytes: 0
+  property string userCleanableStr: "0 B"
+  property string systemCleanableStr: "0 B"
+  property string cleanableStr: "0 B"
+  property bool isCleaning: false
+  property string cleanStatusMsg: ""
+
+  Process {
+    id: storageScanProc
+    command: ["/home/chef_carthy/.local/bin/omarchy-storage-cleaner", "scan"]
+    running: false
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var res = JSON.parse(text.trim())
+          if (res && res.disk) {
+            root.diskTotalStr = res.disk.total_str || "475 GB"
+            root.diskUsedStr = res.disk.used_str || "47 GB"
+            root.diskFreeStr = res.disk.free_str || "428 GB"
+            root.diskPercent = res.disk.percent || 10.0
+            root.userCleanableBytes = res.user_cleanable_bytes || 0
+            root.userCleanableStr = res.user_cleanable_str || "0 B"
+            root.systemCleanableStr = res.system_cleanable_str || "0 B"
+            root.cleanableStr = res.total_cleanable_str || "0 B"
+          }
+        } catch(e) {}
+      }
+    }
+  }
+
+  Process {
+    id: storageCleanProc
+    command: ["/home/chef_carthy/.local/bin/omarchy-storage-cleaner", "clean", "safe"]
+    running: false
+    onExited: (exitCode, exitStatus) => {
+      root.isCleaning = false
+      root.cleanStatusMsg = "✓ Cleaned!"
+      cleanResetTimer.restart()
+      storageScanProc.running = true
+    }
+  }
+
+  Timer {
+    id: cleanResetTimer
+    interval: 3000
+    repeat: false
+    onTriggered: root.cleanStatusMsg = ""
+  }
+
+  Timer {
+    id: storageScanTimer
+    interval: 30000
+    running: root.popupOpen
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: {
+      if (!storageScanProc.running) storageScanProc.running = true
+    }
+  }
 
   function refreshPosProc() {
     var cmd = ["/home/chef_carthy/.local/bin/playerctl"]
@@ -228,25 +290,28 @@ BarWidget {
     target: "custom.media"
 
     function toggle(): void {
-      root.turboPopupOpen = false
-      root.mediaPopupOpen = !root.mediaPopupOpen
+      root.pinned = !root.pinned
+      root.popupOpen = root.pinned
     }
 
     function togglePin(): void {
       root.pinned = !root.pinned
+      root.popupOpen = root.pinned
     }
 
     function setPinned(val: string): void {
       root.pinned = (val === "true" || val === "1")
+      root.popupOpen = root.pinned
     }
 
     function open(): void {
-      root.turboPopupOpen = false
-      root.mediaPopupOpen = true
+      root.pinned = true
+      root.popupOpen = true
     }
 
     function close(): void {
-      root.mediaPopupOpen = false
+      root.pinned = false
+      root.popupOpen = false
     }
 
     function playPause(): void {
@@ -405,916 +470,242 @@ BarWidget {
   }
 
   // -------------------------------------------------------------
-  // DRAWER EXPANSION & PIN STATE (WAYBAR / TRAY COMPATIBLE ANIMATION)
+  // DROPDOWN PANEL & PIN STATE
   // -------------------------------------------------------------
   property bool pinned: false
-  property bool hoverExpanded: false
-  readonly property bool isChefExpanded: pinned || hoverExpanded
-  property real chefRevealProgress: isChefExpanded ? 1.0 : 0.0
-  readonly property int chefAnimationDuration: 600
+  property bool popupOpen: false
 
-  Behavior on chefRevealProgress {
-    NumberAnimation {
-      duration: root.chefAnimationDuration
-      easing.type: Easing.OutCubic
+  function close() {
+    pinned = false
+    popupOpen = false
+  }
+
+  // -------------------------------------------------------------
+  // DELAYED AUTO-CLOSE TIMER (3.5s Grace Period)
+  // -------------------------------------------------------------
+  Timer {
+    id: autoCloseTimer
+    interval: 3500
+    repeat: false
+    onTriggered: {
+      if (!root.pinned && !arrowHover.hovered && !panelHover.hovered) {
+        root.popupOpen = false
+      }
     }
   }
 
   // -------------------------------------------------------------
-  // TOP BAR CONTAINER: Spotify (Auto-Wake) + Turbo HUD + Theme
+  // TOP BAR TRIGGER: Single Downward Chevron Arrow (beside battery)
   // -------------------------------------------------------------
   visible: true
-  implicitWidth: masterRow.implicitWidth + Style.space(4)
-  implicitHeight: barSize
+  implicitWidth: triggerArrow.implicitWidth
+  implicitHeight: root.barSize
 
-  Row {
-    id: masterRow
+  Item {
+    id: triggerArrow
     anchors.verticalCenter: parent.verticalCenter
-    spacing: Style.space(6)
+    implicitWidth: Style.space(22)
+    implicitHeight: root.barSize
 
-    // 1. Chef Player Spotify Capsule (Slide-out Drawer + Pin Support)
     Rectangle {
-      id: mediaCapsule
-      anchors.verticalCenter: parent.verticalCenter
-      height: Math.min(parent.height - Style.space(6), Style.space(28))
-      implicitWidth: compactInfoArea.implicitWidth + Math.round(chefDrawerRow.implicitWidth * root.chefRevealProgress) + Style.space(16)
-      radius: height / 2
-      color: root.isPlaying ? (root.isChefExpanded ? "#221db954" : "#141db954") : "#12151c"
-      border.color: root.isPlaying ? "#1db954" : (root.isChefExpanded ? "#1db95488" : "#2a3447")
+      id: arrowBg
+      anchors.centerIn: parent
+      width: Style.space(22)
+      height: Style.space(22)
+      radius: width / 2
+      color: (arrowMouse.containsMouse || root.popupOpen) ? Util.alpha(Color.accent, 0.18) : "transparent"
+      border.color: (arrowMouse.containsMouse || root.popupOpen) ? Color.accent : "transparent"
       border.width: 1
-      visible: root.hasMedia
 
-      Behavior on color { ColorAnimation { duration: 200 } }
-      Behavior on border.color { ColorAnimation { duration: 200 } }
+      Behavior on color { ColorAnimation { duration: 150 } }
+      Behavior on border.color { ColorAnimation { duration: 150 } }
 
-      // Hover Handler to trigger expansion on hover
-      HoverHandler {
-        id: capsuleHover
-        onHoveredChanged: {
-          root.hoverExpanded = hovered
-        }
-      }
-
-      Row {
-        id: mediaInner
+      Text {
         anchors.centerIn: parent
-        spacing: Style.space(5)
+        text: root.popupOpen ? "󰅃" : "󰅀"
+        color: (arrowMouse.containsMouse || root.popupOpen) ? Color.accent : (root.bar ? root.bar.foreground : Color.foreground)
+        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+        font.pixelSize: 13
+        font.bold: true
+      }
+    }
 
-        // 1. Left-anchored Compact Info Area (Spotify Icon + Equalizer + Title + Artist + Expand Chevron)
-        Item {
-          id: compactInfoArea
-          anchors.verticalCenter: parent.verticalCenter
-          implicitWidth: compactInfoRow.implicitWidth
-          implicitHeight: compactInfoRow.implicitHeight
-
-          Row {
-            id: compactInfoRow
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(5)
-
-            // Spotify Icon
-            Rectangle {
-              width: Style.space(16)
-              height: Style.space(16)
-              radius: width / 2
-              color: root.isPlaying ? "#1db954" : "#2a2e39"
-              anchors.verticalCenter: parent.verticalCenter
-
-              Text {
-                anchors.centerIn: parent
-                text: root.getSourceIcon(root.manualSelectedPlayerName || (root.activePlayer ? root.activePlayer.identity : ""))
-                color: root.isPlaying ? "#000000" : "#8a94a6"
-                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: 10
-                font.bold: true
-              }
-
-              MouseArea {
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  root.turboPopupOpen = false
-                  root.mediaPopupOpen = !root.mediaPopupOpen
-                }
-              }
-            }
-
-            // 4-Bar Dancing Equalizer
-            Row {
-              spacing: Style.space(1.5)
-              anchors.verticalCenter: parent.verticalCenter
-              visible: root.isPlaying
-
-              Repeater {
-                model: 4
-                Rectangle {
-                  required property int index
-                  width: Style.space(2)
-                  height: Style.space(3) + Math.abs(Math.sin(root.eqPhase * 1.8 + index * 0.9)) * Style.space(8)
-                  radius: 1
-                  color: "#1db954"
-                  anchors.bottom: parent.bottom
-                }
-              }
-            }
-
-            // Track Title
-            Text {
-              text: root.title
-              color: root.isPlaying ? "#ffffff" : "#94a3b8"
-              font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: Style.font.bodySmall
-              font.bold: root.isPlaying
-              elide: Text.ElideRight
-              maximumLineCount: 1
-              width: Math.min(implicitWidth, 130)
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            // Artist
-            Text {
-              text: root.artist ? "· " + root.artist : ""
-              color: "#1db954"
-              font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: Style.font.caption
-              elide: Text.ElideRight
-              visible: root.artist !== ""
-              width: Math.min(implicitWidth, 70)
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            // Expand / Pin Chevron Indicator (< / >)
-            Text {
-              text: root.pinned ? "󰐃" : (root.isChefExpanded ? "\uf053" : "\uf054")
-              color: root.pinned ? "#1db954" : (root.isChefExpanded ? "#1db954" : "#64748b")
-              font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: 8
-              anchors.verticalCenter: parent.verticalCenter
-            }
-          }
-
-          MouseArea {
-            id: infoClickArea
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            acceptedButtons: Qt.LeftButton | Qt.RightButton
-            onClicked: (mouse) => {
-              if (mouse.button === Qt.LeftButton) {
-                // Click to toggle Pin state
-                root.pinned = !root.pinned
-              } else if (mouse.button === Qt.RightButton) {
-                // Right click opens Audio Hub popup
-                root.turboPopupOpen = false
-                root.mediaPopupOpen = !root.mediaPopupOpen
-              }
-            }
-            onWheel: (wheel) => {
-              if (wheel.angleDelta.y > 0) root.seekOffset(5)
-              else if (wheel.angleDelta.y < 0) root.seekOffset(-5)
-            }
-          }
-        }
-
-        // 2. Sliding Drawer Container (Reveals towards right into the bar)
-        Item {
-          id: chefDrawerClip
-          anchors.verticalCenter: parent.verticalCenter
-          width: Math.round(chefDrawerRow.implicitWidth * root.chefRevealProgress)
-          height: parent.height
-          clip: true
-
-          Row {
-            id: chefDrawerRow
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(5)
-            layer.enabled: true
-
-            // Subtle Divider Line
-            Rectangle {
-              width: 1
-              height: Style.space(12)
-              color: "#2a3447"
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            // Prev Button
-            Rectangle {
-              width: Style.space(18)
-              height: Style.space(18)
-              radius: 9
-              color: prevInlineMouse.containsMouse ? "#251db954" : "transparent"
-              anchors.verticalCenter: parent.verticalCenter
-
-              Text {
-                anchors.centerIn: parent
-                text: "⏮"
-                color: prevInlineMouse.containsMouse ? "#1db954" : "#cbd5e1"
-                font.pixelSize: 9
-              }
-
-              MouseArea {
-                id: prevInlineMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.skipPrev()
-              }
-            }
-
-            // Play / Pause Button
-            Rectangle {
-              width: Style.space(20)
-              height: Style.space(20)
-              radius: 10
-              color: playInlineMouse.containsMouse ? "#1ed760" : "#1db954"
-              anchors.verticalCenter: parent.verticalCenter
-
-              Text {
-                anchors.centerIn: parent
-                text: root.isPlaying ? "⏸" : "▶"
-                color: "#000000"
-                font.pixelSize: 9
-                font.bold: true
-              }
-
-              MouseArea {
-                id: playInlineMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.togglePlay()
-              }
-            }
-
-            // Next Button
-            Rectangle {
-              width: Style.space(18)
-              height: Style.space(18)
-              radius: 9
-              color: nextInlineMouse.containsMouse ? "#251db954" : "transparent"
-              anchors.verticalCenter: parent.verticalCenter
-
-              Text {
-                anchors.centerIn: parent
-                text: "⏭"
-                color: nextInlineMouse.containsMouse ? "#1db954" : "#cbd5e1"
-                font.pixelSize: 9
-              }
-
-              MouseArea {
-                id: nextInlineMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.skipNext()
-              }
-            }
-
-            // Compact Mini Live Time Pill
-            Rectangle {
-              height: Style.space(16)
-              implicitWidth: timeText.implicitWidth + Style.space(8)
-              radius: 8
-              color: "#18202d"
-              anchors.verticalCenter: parent.verticalCenter
-
-              Text {
-                id: timeText
-                anchors.centerIn: parent
-                text: root.formatTime(root.positionSec) + " / " + root.formatTime(root.lengthSec)
-                color: "#94a3b8"
-                font.pixelSize: 8
-                font.bold: true
-              }
-            }
-          }
+    HoverHandler {
+      id: arrowHover
+      onHoveredChanged: {
+        if (hovered) {
+          autoCloseTimer.stop()
+          root.popupOpen = true
+        } else if (!root.pinned) {
+          autoCloseTimer.restart()
         }
       }
     }
 
-    // 2. ⚡ Omarchy Turbo Telemetry Pill (ALWAYS VISIBLE on Bar)
-    Rectangle {
-      id: turboCapsule
-      anchors.verticalCenter: parent.verticalCenter
-      height: Math.min(parent.height - Style.space(6), Style.space(28))
-      implicitWidth: turboInner.implicitWidth + Style.space(16)
-      radius: height / 2
-      color: turboMouse.containsMouse ? "#2510b981" : "#131722"
-      border.color: root.tempColor
-      border.width: 1
-
-      Behavior on color { ColorAnimation { duration: 200 } }
-      Behavior on border.color { ColorAnimation { duration: 200 } }
-
-      Row {
-        id: turboInner
-        anchors.centerIn: parent
-        spacing: Style.space(6)
-
-        // CPU Temperature
-        Row {
-          spacing: Style.space(2)
-          anchors.verticalCenter: parent.verticalCenter
-
-          Text {
-            text: root.tempPeak >= 78 ? "🔥" : (root.tempPeak >= 65 ? "⚡" : "❄️")
-            font.pixelSize: 10
-            anchors.verticalCenter: parent.verticalCenter
-          }
-
-          Text {
-            text: Math.round(root.tempPeak) + "°C"
-            color: root.tempColor
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.bodySmall
-            font.bold: true
-            anchors.verticalCenter: parent.verticalCenter
-          }
-        }
-
-        Rectangle {
-          width: 1
-          height: Style.space(10)
-          color: "#2a3447"
-          anchors.verticalCenter: parent.verticalCenter
-        }
-
-        // RAM Usage
-        Row {
-          spacing: Style.space(2)
-          anchors.verticalCenter: parent.verticalCenter
-
-          Text {
-            text: "🧠"
-            font.pixelSize: 10
-            anchors.verticalCenter: parent.verticalCenter
-          }
-
-          Text {
-            text: Math.round(root.ramPercent) + "%"
-            color: root.ramPercent > 85 ? "#ef4444" : "#cbd5e1"
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.bodySmall
-            font.bold: true
-            anchors.verticalCenter: parent.verticalCenter
-          }
-        }
-      }
-
-      MouseArea {
-        id: turboMouse
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: {
-          root.mediaPopupOpen = false
-          root.turboPopupOpen = !root.turboPopupOpen
-        }
-      }
-    }
-
-    // 3. 🎨 Theme & Wallpaper Rotator Button
-    Rectangle {
-      id: themeCapsule
-      anchors.verticalCenter: parent.verticalCenter
-      height: Math.min(parent.height - Style.space(6), Style.space(28))
-      implicitWidth: themeInner.implicitWidth + Style.space(12)
-      radius: height / 2
-      color: themeMouse.containsMouse ? "#253b82f6" : "#131722"
-      border.color: themeMouse.containsMouse ? "#3b82f6" : "#2a3447"
-      border.width: 1
-
-      Behavior on color { ColorAnimation { duration: 200 } }
-      Behavior on border.color { ColorAnimation { duration: 200 } }
-
-      Row {
-        id: themeInner
-        anchors.centerIn: parent
-        spacing: Style.space(4)
-
-        Text {
-          text: "🎨"
-          font.pixelSize: 11
-          anchors.verticalCenter: parent.verticalCenter
-        }
-
-        Text {
-          text: "Theme"
-          color: themeMouse.containsMouse ? "#60a5fa" : "#94a3b8"
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          anchors.verticalCenter: parent.verticalCenter
-        }
-      }
-
-      MouseArea {
-        id: themeMouse
-        anchors.fill: parent
-        hoverEnabled: true
-        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
-        cursorShape: Qt.PointingHandCursor
-
-        onClicked: (mouse) => {
-          if (mouse.button === Qt.LeftButton) {
-            wallProc.command = ["/usr/share/omarchy/bin/omarchy-theme-switcher"]
-            wallProc.running = true
-          } else if (mouse.button === Qt.RightButton) {
-            wallProc.command = ["omarchy", "theme", "bg-switcher"]
-            wallProc.running = true
-          } else if (mouse.button === Qt.MiddleButton) {
-            wallProc.command = ["/home/chef_carthy/.local/bin/omarchy-theme-cycle"]
-            wallProc.running = true
-          }
-        }
-
-        onWheel: (wheel) => {
-          wallProc.command = ["/home/chef_carthy/.local/bin/omarchy-theme-cycle"]
-          wallProc.running = true
+    MouseArea {
+      id: arrowMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        root.pinned = !root.pinned
+        if (root.pinned) {
+          autoCloseTimer.stop()
+          root.popupOpen = true
+        } else {
+          autoCloseTimer.restart()
         }
       }
     }
   }
 
   // -------------------------------------------------------------
-  // POPUP 1: SPOTIFY PREMIUM GLASS AUDIO HUB & SOURCE SWITCHER
+  // POPUP: CUSTOM SLIM (78px) & LONG FLOATING STRIP (16px Radius)
   // -------------------------------------------------------------
-  PopupCard {
-    id: mediaPopup
-    anchorItem: root
-    bar: root.bar
-    owner: root
-    open: root.mediaPopupOpen
-    contentWidth: mediaPopup.fittedContentWidth(Style.space(350))
-    contentHeight: mediaPopup.fittedContentHeight(mediaDeck.implicitHeight + Style.space(24))
+  PopupWindow {
+    id: popup
+    anchor {
+      window: triggerArrow.QsWindow.window
+      adjustment: PopupAdjustment.Slide
+      edges: Edges.Top | Edges.Left
+      gravity: Edges.Bottom | Edges.Right
+      rect.width: 1
+      rect.height: 1
 
-    // Premium Spotify Vertical Gradient Background
-    Rectangle {
-      anchors.fill: parent
-      radius: 16
-      gradient: Gradient {
-        GradientStop { position: 0.0; color: "#222a38" }
-        GradientStop { position: 0.35; color: "#141722" }
-        GradientStop { position: 1.0; color: "#0c0f16" }
+      onAnchoring: {
+        if (!root.bar) return
+        var target = triggerArrow
+        var popupWidth = popup.implicitWidth
+        var popupHeight = popup.implicitHeight
+        var localX = target.width / 2 - popupWidth / 2
+        var localY = target.height + Style.gapsOut
+        var window = target.QsWindow.window
+        if (!window) return
+        var point = window.contentItem.mapFromItem(target, localX, localY)
+        point.x = Math.max(Style.gapsOut, Math.min(point.x, window.width - popupWidth - Style.gapsOut))
+        popup.anchor.rect.x = Math.round(point.x)
+        popup.anchor.rect.y = Math.round(point.y)
       }
-      border.color: "#1db95433"
-      border.width: 1
     }
 
-    Column {
-      id: mediaDeck
+    visible: root.popupOpen || cardSurface.opacity > 0
+    color: "transparent"
+    implicitWidth: Style.space(78)
+    implicitHeight: panelDeck.implicitHeight + Style.space(32)
+
+    // Outside-click dismissal via Hyprland focus grab when pinned
+    HyprlandFocusGrab {
+      active: root.popupOpen && root.pinned
+      windows: triggerArrow.QsWindow.window ? [popup, triggerArrow.QsWindow.window] : [popup]
+      onCleared: root.close()
+    }
+
+    Item {
       anchors.fill: parent
-      anchors.margins: Style.space(14)
-      spacing: Style.space(12)
+      anchors.margins: Style.space(3)
 
-      // 1. Header (Branding & Live Status)
-      Item {
-        width: parent.width
-        height: Style.space(22)
-
-        Row {
-          spacing: Style.space(6)
-          anchors.left: parent.left
-          anchors.verticalCenter: parent.verticalCenter
-
-          Text {
-            text: ""
-            color: "#1db954"
-            font.pixelSize: 15
-            anchors.verticalCenter: parent.verticalCenter
-          }
-          Text {
-            text: "SPOTIFY AUDIO HUB"
-            color: "#1db954"
-            font.pixelSize: 10
-            font.bold: true
-            font.letterSpacing: 1.2
-            anchors.verticalCenter: parent.verticalCenter
-          }
-        }
-
-        Rectangle {
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          height: Style.space(20)
-          implicitWidth: statusText.implicitWidth + Style.space(14)
-          radius: 10
-          color: root.isPlaying ? "#1db95420" : "#33415525"
-          border.color: root.isPlaying ? "#1db954" : "#475569"
-          border.width: 1
-
-          Row {
-            anchors.centerIn: parent
-            spacing: 4
-
-            Rectangle {
-              width: 6
-              height: 6
-              radius: 3
-              color: root.isPlaying ? "#1db954" : "#64748b"
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Text {
-              id: statusText
-              text: root.isPlaying ? "PLAYING" : "PAUSED"
-              color: root.isPlaying ? "#1db954" : "#94a3b8"
-              font.pixelSize: 8
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
-            }
-          }
-        }
-      }
-
-      // 2. Album Artwork & Track Info (Spotify Hierarchy)
-      Row {
-        spacing: Style.space(14)
-        width: parent.width
-
-        // Album Art with rounded corners and subtle shadow/depth
-        Rectangle {
-          width: Style.space(76)
-          height: Style.space(76)
-          radius: 10
-          color: "#141720"
-          border.color: "#ffffff18"
-          border.width: 1
-
-          Image {
-            anchors.fill: parent
-            anchors.margins: 1
-            fillMode: Image.PreserveAspectCrop
-            asynchronous: true
-            source: root.artUrl
-            visible: source !== ""
-          }
-
-          Text {
-            anchors.centerIn: parent
-            visible: root.artUrl === ""
-            text: ""
-            color: "#1db954"
-            font.pixelSize: 32
-          }
-        }
-
-        // Title & Artist Column
-        Column {
-          width: parent.width - Style.space(92)
-          spacing: Style.space(3)
-          anchors.verticalCenter: parent.verticalCenter
-
-          // Track Title (Bold & Prominent)
-          Text {
-            text: root.hasMedia ? root.title : "No Media Playing"
-            color: "#ffffff"
-            font.pixelSize: 15
-            font.bold: true
-            elide: Text.ElideRight
-            width: parent.width
-          }
-
-          // Artist (Secondary, Dimmer & Regular Weight)
-          Text {
-            text: root.hasMedia && root.artist ? root.artist : "Ready to play audio"
-            color: "#a1a1aa"
-            font.pixelSize: 12
-            font.bold: false
-            elide: Text.ElideRight
-            width: parent.width
-          }
-
-          // Media Source Pill Badge
-          Row {
-            spacing: Style.space(4)
-            visible: root.hasMedia
-
-            Rectangle {
-              height: Style.space(18)
-              implicitWidth: sourceTagText.implicitWidth + Style.space(12)
-              radius: 9
-              color: "#18202d"
-              border.color: "#283548"
-              border.width: 1
-
-              Row {
-                anchors.centerIn: parent
-                spacing: 4
-                Text {
-                  text: root.getSourceIcon(root.manualSelectedPlayerName || (root.activePlayer ? root.activePlayer.identity : ""))
-                  color: "#1db954"
-                  font.pixelSize: 9
-                  anchors.verticalCenter: parent.verticalCenter
-                }
-                Text {
-                  id: sourceTagText
-                  text: root.manualSelectedPlayerName || (root.activePlayer ? (root.activePlayer.identity || "Media Source") : "Audio")
-                  color: "#71717a"
-                  font.pixelSize: 9
-                  anchors.verticalCenter: parent.verticalCenter
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // 3. Spotify Progress & Seek Bar
-      Column {
-        width: parent.width
-        spacing: Style.space(4)
-        visible: root.hasMedia
-
-        Item {
-          width: parent.width
-          height: 14
-
-          Rectangle {
-            id: progressBarTrack
-            anchors.verticalCenter: parent.verticalCenter
-            width: parent.width
-            height: (progressMouse.containsMouse || progressMouse.pressed) ? 6 : 4
-            radius: height / 2
-            color: "#282828"
-
-            Behavior on height { NumberAnimation { duration: 120 } }
-
-            Rectangle {
-              id: progressFill
-              width: root.lengthSec > 0 ? parent.width * Math.min(1.0, root.positionSec / root.lengthSec) : (root.isPlaying ? parent.width * 0.4 : 0)
-              height: parent.height
-              radius: parent.radius
-              color: (progressMouse.containsMouse || progressMouse.pressed) ? "#1ed760" : "#1db954"
-            }
-          }
-
-          // Circular Scrubber Knob
-          Rectangle {
-            id: scrubberKnob
-            width: 12
-            height: 12
-            radius: 6
-            color: "#ffffff"
-            border.color: "#00000033"
-            border.width: 1
-            anchors.verticalCenter: parent.verticalCenter
-            x: Math.max(0, Math.min(parent.width - width, (root.lengthSec > 0 ? parent.width * Math.min(1.0, root.positionSec / root.lengthSec) : 0) - width / 2))
-            visible: progressMouse.containsMouse || progressMouse.pressed
-          }
-
-          MouseArea {
-            id: progressMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-
-            function handleSeek(mouseX) {
-              if (root.lengthSec > 0) {
-                var pct = Math.max(0.0, Math.min(1.0, mouseX / width))
-                root.seekTo(pct * root.lengthSec)
-              }
-            }
-
-            onClicked: (mouse) => handleSeek(mouse.x)
-            onPositionChanged: (mouse) => {
-              if (pressed) handleSeek(mouse.x)
-            }
-            onWheel: (wheel) => {
-              if (wheel.angleDelta.y > 0) root.seekOffset(5)
-              else if (wheel.angleDelta.y < 0) root.seekOffset(-5)
-            }
-          }
-        }
-
-        // Live Elapsed & Total Timestamps
-        Item {
-          width: parent.width
-          height: Style.space(14)
-
-          Text {
-            text: root.formatTime(root.positionSec)
-            color: "#94a3b8"
-            font.pixelSize: 10
-            anchors.left: parent.left
-          }
-          Text {
-            text: root.formatTime(root.lengthSec)
-            color: "#94a3b8"
-            font.pixelSize: 10
-            anchors.right: parent.right
-          }
-        }
-      }
-
-      // 4. Cohesive Playback Control Cluster (Tightened Grouping)
+      // Drop Shadow Layer (Multi-tiered soft elevation glow)
       Rectangle {
-        width: Style.space(140)
-        height: Style.space(46)
-        radius: 23
-        color: "#141924"
-        border.color: "#222c3c"
-        border.width: 1
-        anchors.horizontalCenter: parent.horizontalCenter
-        visible: root.hasMedia
-
-        Row {
-          anchors.centerIn: parent
-          spacing: Style.space(6)
-
-          // Previous Track
-          Rectangle {
-            width: Style.space(32)
-            height: Style.space(32)
-            radius: 16
-            color: prevMouse.containsMouse ? "#242f40" : "transparent"
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              anchors.centerIn: parent
-              text: "⏮"
-              color: prevMouse.containsMouse ? "#1db954" : "#cbd5e1"
-              font.pixelSize: 13
-            }
-            MouseArea {
-              id: prevMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.skipPrev()
-            }
-          }
-
-          // Center Big Play/Pause FAB
-          Rectangle {
-            width: Style.space(40)
-            height: Style.space(40)
-            radius: 20
-            color: playMouse.containsMouse ? "#1ed760" : "#1db954"
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              anchors.centerIn: parent
-              text: root.isPlaying ? "⏸" : "▶"
-              color: "#000000"
-              font.pixelSize: 15
-              font.bold: true
-            }
-            MouseArea {
-              id: playMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.togglePlay()
-            }
-          }
-
-          // Next Track
-          Rectangle {
-            width: Style.space(32)
-            height: Style.space(32)
-            radius: 16
-            color: nextMouse.containsMouse ? "#242f40" : "transparent"
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              anchors.centerIn: parent
-              text: "⏭"
-              color: nextMouse.containsMouse ? "#1db954" : "#cbd5e1"
-              font.pixelSize: 13
-            }
-            MouseArea {
-              id: nextMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.skipNext()
-            }
-          }
-        }
+        anchors.fill: cardSurface
+        anchors.topMargin: 4
+        anchors.bottomMargin: -4
+        anchors.leftMargin: -1
+        anchors.rightMargin: -1
+        radius: 18
+        color: "#00000066"
+        opacity: cardSurface.opacity
+      }
+      Rectangle {
+        anchors.fill: cardSurface
+        anchors.topMargin: 2
+        anchors.bottomMargin: -2
+        radius: 17
+        color: "#00000040"
+        opacity: cardSurface.opacity
       }
 
-      // 5. 1-Click Multi-Tab & Multi-Player Audio Switcher
-      Column {
-        id: tabSourceList
-        width: parent.width
-        spacing: Style.space(6)
-        visible: (root.livePlayers && root.livePlayers.length > 0) || (root.sourcePlayers && root.sourcePlayers.length > 0)
+      // Main Card Surface: 78px Slim Long Strip with 16px Rounded Corners & Accent Border
+      Rectangle {
+        id: cardSurface
+        anchors.fill: parent
+        radius: 16
+        color: Color.popups.background
+        border.color: Util.alpha(Color.accent, 0.45)
+        border.width: 1.5
+        clip: true
+        opacity: root.popupOpen ? 1.0 : 0.0
 
+        Behavior on opacity {
+          NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+        }
+
+        // Inner subtle ambient top highlight
         Rectangle {
-          width: parent.width
-          height: 1
-          color: "#1e293b"
-        }
-
-        Row {
-          spacing: 6
-          Text {
-            text: "󱘖"
-            color: "#1db954"
-            font.pixelSize: 11
-          }
-          Text {
-            text: "ACTIVE TABS & PLAYERS (" + (root.livePlayers.length > 0 ? root.livePlayers.length : (root.sourcePlayers ? root.sourcePlayers.length : 0)) + ")"
-            color: "#94a3b8"
-            font.pixelSize: 10
-            font.bold: true
-            font.letterSpacing: 1.0
+          anchors.fill: parent
+          radius: 16
+          gradient: Gradient {
+            GradientStop { position: 0.0; color: Util.alpha(Color.accent, 0.09) }
+            GradientStop { position: 0.25; color: "transparent" }
+            GradientStop { position: 1.0; color: Util.alpha("#000000", 0.28) }
           }
         }
 
-        Repeater {
-          model: root.livePlayers.length > 0 ? root.livePlayers : root.sourcePlayers
-
-          Rectangle {
-            id: tabRow
-            required property var modelData
-            readonly property var pItem: modelData
-            readonly property string pName: pItem ? (pItem.name || MediaModel.playerKey(pItem) || "") : ""
-            readonly property string pTitle: pItem ? (pItem.title || pItem.trackTitle || pName || "Audio Tab") : "Media"
-            readonly property string pArtist: pItem ? (pItem.artist || pItem.trackArtist || pName || "") : ""
-            readonly property bool isSelected: (root.manualSelectedPlayerName && root.manualSelectedPlayerName === pName) ||
-                                               (!root.manualSelectedPlayerName && isThisPlaying)
-            readonly property bool isThisPlaying: pItem ? (pItem.status === "Playing" || pItem.isPlaying || pItem.playbackState === MprisPlaybackState.Playing) : false
-
-            width: tabSourceList.width
-            height: Style.space(42)
-            radius: 8
-            color: isSelected ? "#1db95420" : (rowMouse.containsMouse ? "#1e293b80" : "#111620")
-            border.color: isSelected ? "#1db954" : (rowMouse.containsMouse ? "#334155" : "#1e293b")
-            border.width: 1
-
-            // Selection Mouse Area (covers whole left area)
-            MouseArea {
-              id: rowMouse
-              anchors.fill: parent
-              anchors.rightMargin: Style.space(36)
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                if (tabRow.pName) {
-                  root.manualSelectedPlayerName = tabRow.pName
-                  root.manualSelectedPlayerKey = tabRow.pName
-                  if (root.mediaService) {
-                    root.mediaService.selectPlayer(tabRow.pName)
-                  }
-                  root.refreshPosProc()
-                }
-              }
+        HoverHandler {
+          id: panelHover
+          onHoveredChanged: {
+            if (hovered) {
+              autoCloseTimer.stop()
+              root.popupOpen = true
+            } else if (!root.pinned) {
+              autoCloseTimer.restart()
             }
+          }
+        }
 
-            Row {
-              anchors.fill: parent
-              anchors.leftMargin: 10
-              anchors.rightMargin: 10
-              spacing: Style.space(8)
+        // ---------------------------------------------------------
+        // VERTICAL STRIP DECK (AMPLIFIED VERTICAL SPACING)
+        // ---------------------------------------------------------
+        Column {
+          id: panelDeck
+          anchors.fill: parent
+          anchors.margins: Style.space(8)
+          spacing: Style.space(16)
+
+          // =======================================================
+          // SECTION 1: CHEF PLAYER
+          // =======================================================
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+
+            // Header Icon & Pin Badge
+            Item {
+              width: parent.width
+              height: Style.space(16)
 
               Text {
-                text: root.getSourceIcon(tabRow.pName)
-                color: tabRow.isSelected ? "#1db954" : "#94a3b8"
-                font.pixelSize: 14
+                text: ""
+                color: Color.accent
+                font.pixelSize: 12
+                anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
               }
 
-              Column {
-                width: parent.width - Style.space(72)
-                spacing: 1
-                anchors.verticalCenter: parent.verticalCenter
-
-                Text {
-                  text: tabRow.pTitle
-                  color: tabRow.isSelected ? "#ffffff" : "#cbd5e1"
-                  font.pixelSize: 11
-                  font.bold: tabRow.isSelected
-                  elide: Text.ElideRight
-                  width: parent.width
-                }
-
-                Text {
-                  text: tabRow.pArtist !== "" ? tabRow.pArtist : "Audio Source"
-                  color: "#64748b"
-                  font.pixelSize: 9
-                  elide: Text.ElideRight
-                  width: parent.width
-                }
-              }
-
-              // Direct 1-Click Play/Pause on this Tab/Player
               Rectangle {
-                width: Style.space(26)
-                height: Style.space(26)
-                radius: 13
-                color: tabRow.isThisPlaying ? "#1db954" : "#334155"
+                width: Style.space(16)
+                height: Style.space(16)
+                radius: 8
+                color: root.pinned ? Util.alpha(Color.accent, 0.25) : "transparent"
+                border.color: root.pinned ? Color.accent : Util.alpha(Color.muted, 0.3)
+                border.width: 1
+                anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
 
                 Text {
                   anchors.centerIn: parent
-                  text: tabRow.isThisPlaying ? "⏸" : "▶"
-                  color: tabRow.isThisPlaying ? "#000000" : "#ffffff"
+                  text: "󰐃"
+                  color: root.pinned ? Color.accent : Color.muted
                   font.pixelSize: 9
-                  font.bold: true
                 }
 
                 MouseArea {
@@ -1322,293 +713,551 @@ BarWidget {
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
                   onClicked: {
-                    if (tabRow.pName) {
-                      playerctlProc.command = ["/home/chef_carthy/.local/bin/playerctl", "-p", tabRow.pName, "play-pause"]
-                      playerctlProc.running = true
-                      posPollTimer.restart()
+                    root.pinned = !root.pinned
+                    if (root.pinned) {
+                      autoCloseTimer.stop()
+                      root.popupOpen = true
+                    } else {
+                      autoCloseTimer.restart()
                     }
                   }
                 }
               }
             }
-          }
-        }
-      }
-    }
-  }
 
-  // -------------------------------------------------------------
-  // POPUP 2: ⚡ OMARCHY TURBO TELEMETRY HUD & POWER CONTROL
-  // -------------------------------------------------------------
-  PopupCard {
-    id: turboPopup
-    anchorItem: root
-    bar: root.bar
-    owner: root
-    open: root.turboPopupOpen
-    contentWidth: turboPopup.fittedContentWidth(Style.space(330))
-    contentHeight: turboPopup.fittedContentHeight(turboHudCol.implicitHeight + Style.space(20))
+            // Album Art
+            Rectangle {
+              width: Style.space(56)
+              height: Style.space(56)
+              radius: 10
+              color: Util.alpha(Color.background, 0.8)
+              border.color: Util.alpha(Color.foreground, 0.15)
+              border.width: 1
+              anchors.horizontalCenter: parent.horizontalCenter
 
-    Column {
-      id: turboHudCol
-      anchors.fill: parent
-      anchors.margins: Style.space(12)
-      spacing: Style.space(12)
+              Image {
+                anchors.fill: parent
+                anchors.margins: 1
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                source: root.artUrl
+                visible: source !== ""
+              }
 
-      // Header Row
-      Item {
-        width: parent.width
-        height: Style.space(20)
+              Text {
+                anchors.centerIn: parent
+                visible: root.artUrl === ""
+                text: ""
+                color: Color.accent
+                font.pixelSize: 22
+              }
+            }
 
-        Row {
-          spacing: 6
-          anchors.left: parent.left
-          anchors.verticalCenter: parent.verticalCenter
-          Text {
-            text: "⚡"
-            font.pixelSize: 14
-            anchors.verticalCenter: parent.verticalCenter
-          }
-          Text {
-            text: "OMARCHY TURBO HUD"
-            color: "#10b981"
-            font.pixelSize: 11
-            font.bold: true
-            font.letterSpacing: 1.2
-            anchors.verticalCenter: parent.verticalCenter
-          }
-        }
+            // Title & Artist
+            Column {
+              width: parent.width
+              spacing: 2
 
-        Rectangle {
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          width: Style.space(80)
-          height: Style.space(20)
-          radius: 10
-          color: root.powerProfile === "performance" ? "#ef444425" : (root.powerProfile === "power-saver" ? "#10b98125" : "#3b82f625")
-          border.color: root.powerProfile === "performance" ? "#ef4444" : (root.powerProfile === "power-saver" ? "#10b981" : "#3b82f6")
+              Text {
+                text: root.hasMedia ? root.title : "No Media"
+                color: Color.foreground
+                font.pixelSize: 9
+                font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+                width: parent.width
+              }
 
-          Text {
-            anchors.centerIn: parent
-            text: root.powerProfile.toUpperCase()
-            color: root.powerProfile === "performance" ? "#ef4444" : (root.powerProfile === "power-saver" ? "#10b981" : "#3b82f6")
-            font.pixelSize: 8
-            font.bold: true
-          }
-        }
-      }
+              Text {
+                text: root.hasMedia && root.artist ? root.artist : "Paused"
+                color: Color.muted
+                font.pixelSize: 8
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+                width: parent.width
+              }
+            }
 
-      // Thermal & CPU Health Card
-      Rectangle {
-        width: parent.width
-        height: Style.space(64)
-        radius: 10
-        color: "#111827"
-        border.color: "#1f2937"
+            // 1.3 REAL DRAG-TO-SEEK SLIDER (Dynamic Theme Matched)
+            Column {
+              width: parent.width
+              spacing: 2
+              visible: root.hasMedia
 
-        Row {
-          anchors.fill: parent
-          anchors.margins: Style.space(10)
+              Slider {
+                id: seekSlider
+                width: parent.width
+                height: Style.space(16)
+                from: 0
+                to: Math.max(1.0, root.lengthSec)
+                value: (pressed || visualDrag) ? dragVal : root.positionSec
+                stepSize: 1.0
 
-          Column {
-            width: parent.width / 3
-            spacing: 2
-            Text { text: "PEAK TEMP"; color: "#6b7280"; font.pixelSize: 8; font.bold: true }
-            Text { text: root.tempPeak + "°C"; color: root.tempColor; font.pixelSize: 15; font.bold: true }
-          }
+                property bool visualDrag: false
+                property real dragVal: 0.0
 
-          Column {
-            width: parent.width / 3
-            spacing: 2
-            Text { text: "AVG TEMP"; color: "#6b7280"; font.pixelSize: 8; font.bold: true }
-            Text { text: root.tempAvg + "°C"; color: "#e5e7eb"; font.pixelSize: 15; font.bold: true }
-          }
+                background: Rectangle {
+                  x: seekSlider.leftPadding
+                  y: seekSlider.topPadding + seekSlider.availableHeight / 2 - height / 2
+                  implicitWidth: 50
+                  implicitHeight: 4
+                  width: seekSlider.availableWidth
+                  height: implicitHeight
+                  radius: 2
+                  color: Util.alpha(Color.foreground, 0.18)
 
-          Column {
-            width: parent.width / 3
-            spacing: 2
-            Text { text: "CPU LOAD"; color: "#6b7280"; font.pixelSize: 8; font.bold: true }
-            Text { text: root.cpuLoad; color: root.cpuLoad > 3.0 ? "#f59e0b" : "#10b981"; font.pixelSize: 15; font.bold: true }
-          }
-        }
-      }
+                  Rectangle {
+                    width: seekSlider.visualPosition * parent.width
+                    height: parent.height
+                    color: Color.accent
+                    radius: 2
+                  }
+                }
 
-      // Memory (RAM) Bar
-      Column {
-        width: parent.width
-        spacing: 4
+                handle: Rectangle {
+                  x: seekSlider.leftPadding + seekSlider.visualPosition * (seekSlider.availableWidth - width)
+                  y: seekSlider.topPadding + seekSlider.availableHeight / 2 - height / 2
+                  implicitWidth: 10
+                  implicitHeight: 10
+                  radius: 5
+                  color: seekSlider.pressed ? "#ffffff" : Color.accent
+                  border.color: Util.alpha(Color.background, 0.6)
+                  border.width: 1
+                  scale: (seekSlider.hovered || seekSlider.pressed) ? 1.25 : 1.0
 
-        Item {
-          width: parent.width
-          height: Style.space(16)
-          Text {
-            text: "🧠 SYSTEM MEMORY (RAM)"
-            color: "#9ca3af"
-            font.pixelSize: 10
-            font.bold: true
-            anchors.left: parent.left
-          }
-          Text {
-            text: root.ramUsed + " / " + root.ramTotal + " GB (" + root.ramPercent + "%)"
-            color: "#e5e7eb"
-            font.pixelSize: 10
-            anchors.right: parent.right
-          }
-        }
+                  Behavior on scale { NumberAnimation { duration: 100 } }
+                }
 
-        Rectangle {
-          width: parent.width
-          height: 6
-          radius: 3
-          color: "#1f2937"
+                onPressedChanged: {
+                  if (pressed) {
+                    visualDrag = true
+                    dragVal = value
+                  } else {
+                    visualDrag = false
+                    root.seekTo(value)
+                  }
+                }
 
-          Rectangle {
-            width: parent.width * Math.min(1.0, root.ramPercent / 100.0)
-            height: parent.height
-            radius: 3
-            color: root.ramPercent > 85 ? "#ef4444" : (root.ramPercent > 70 ? "#f59e0b" : "#10b981")
-          }
-        }
-      }
+                onMoved: {
+                  dragVal = value
+                  root.seekTo(value)
+                }
+              }
 
-      // Quick Actions Row
-      Column {
-        width: parent.width
-        spacing: Style.space(6)
+              // Live Timestamps
+              Item {
+                width: parent.width
+                height: Style.space(10)
 
-        Text {
-          text: "🚀 QUICK ACTIONS"
-          color: "#6b7280"
-          font.pixelSize: 9
-          font.bold: true
-          font.letterSpacing: 1.0
-        }
+                Text {
+                  text: root.formatTime(seekSlider.pressed ? seekSlider.value : root.positionSec)
+                  color: Color.muted
+                  font.pixelSize: 7
+                  anchors.left: parent.left
+                }
+                Text {
+                  text: root.formatTime(root.lengthSec)
+                  color: Color.muted
+                  font.pixelSize: 7
+                  anchors.right: parent.right
+                }
+              }
+            }
 
-        Row {
-          spacing: Style.space(6)
-          width: parent.width
-
-          Rectangle {
-            width: (parent.width - Style.space(12)) / 3
-            height: Style.space(32)
-            radius: 6
-            color: coolBtn.containsMouse ? "#10b98130" : "#1f2937"
-            border.color: "#10b981"
-
+            // 1.4 Cohesive Playback Controls
             Row {
-              anchors.centerIn: parent
-              spacing: 4
-              Text { text: "❄️"; font.pixelSize: 11 }
-              Text { text: "Cool"; color: "#ffffff"; font.pixelSize: 10; font.bold: true }
+              spacing: Style.space(4)
+              anchors.horizontalCenter: parent.horizontalCenter
+              visible: root.hasMedia
+
+              Rectangle {
+                width: Style.space(18)
+                height: Style.space(18)
+                radius: 9
+                color: prevMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : "transparent"
+                anchors.verticalCenter: parent.verticalCenter
+
+                Text {
+                  anchors.centerIn: parent
+                  text: "⏮"
+                  color: prevMouse.containsMouse ? Color.accent : Color.foreground
+                  font.pixelSize: 9
+                }
+                MouseArea {
+                  id: prevMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.skipPrev()
+                }
+              }
+
+              Rectangle {
+                width: Style.space(24)
+                height: Style.space(24)
+                radius: 12
+                color: playMouse.containsMouse ? Color.foreground : Color.accent
+                anchors.verticalCenter: parent.verticalCenter
+
+                Text {
+                  anchors.centerIn: parent
+                  text: root.isPlaying ? "⏸" : "▶"
+                  color: Color.background
+                  font.pixelSize: 10
+                  font.bold: true
+                }
+                MouseArea {
+                  id: playMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.togglePlay()
+                }
+              }
+
+              Rectangle {
+                width: Style.space(18)
+                height: Style.space(18)
+                radius: 9
+                color: nextMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : "transparent"
+                anchors.verticalCenter: parent.verticalCenter
+
+                Text {
+                  anchors.centerIn: parent
+                  text: "⏭"
+                  color: nextMouse.containsMouse ? Color.accent : Color.foreground
+                  font.pixelSize: 9
+                }
+                MouseArea {
+                  id: nextMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.skipNext()
+                }
+              }
             }
-            MouseArea {
-              id: coolBtn
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.runTurboAction("cool")
+
+            // 1.5 Mini Active Player Source Badge
+            Rectangle {
+              width: parent.width
+              height: Style.space(18)
+              radius: 9
+              color: Util.alpha(Color.background, 0.6)
+              border.color: Util.alpha(Color.foreground, 0.15)
+              border.width: 1
+              visible: root.hasMedia
+
+              Row {
+                anchors.centerIn: parent
+                spacing: 3
+                Text {
+                  text: root.getSourceIcon(root.manualSelectedPlayerName || (root.activePlayer ? root.activePlayer.identity : ""))
+                  color: Color.accent
+                  font.pixelSize: 8
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+                Text {
+                  text: (root.manualSelectedPlayerName || (root.activePlayer ? (root.activePlayer.identity || "Media") : "Audio")).substring(0, 8)
+                  color: Color.muted
+                  font.pixelSize: 7
+                  elide: Text.ElideRight
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
             }
           }
 
+          // =======================================================
+          // DIVIDER 1
+          // =======================================================
           Rectangle {
-            width: (parent.width - Style.space(12)) / 3
-            height: Style.space(32)
-            radius: 6
-            color: boostBtn.containsMouse ? "#ef444430" : "#1f2937"
-            border.color: "#ef4444"
-
-            Row {
-              anchors.centerIn: parent
-              spacing: 4
-              Text { text: "🚀"; font.pixelSize: 11 }
-              Text { text: "Boost"; color: "#ffffff"; font.pixelSize: 10; font.bold: true }
-            }
-            MouseArea {
-              id: boostBtn
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.runTurboAction("boost")
-            }
+            width: parent.width
+            height: 1
+            color: Util.alpha(Color.foreground, 0.12)
           }
 
-          Rectangle {
-            width: (parent.width - Style.space(12)) / 3
-            height: Style.space(32)
-            radius: 6
-            color: cleanBtn.containsMouse ? "#3b82f630" : "#1f2937"
-            border.color: "#3b82f6"
+          // =======================================================
+          // SECTION 2: SYSTEM THEME SWITCHER (VERTICAL STACK)
+          // =======================================================
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
 
-            Row {
-              anchors.centerIn: parent
-              spacing: 4
-              Text { text: "🧹"; font.pixelSize: 11 }
-              Text { text: "Clean"; color: "#ffffff"; font.pixelSize: 10; font.bold: true }
-            }
-            MouseArea {
-              id: cleanBtn
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.runTurboAction("clean")
-            }
-          }
-        }
-      }
-
-      // Auto-Pilot Toggle Row
-      Rectangle {
-        width: parent.width
-        height: Style.space(34)
-        radius: 8
-        color: "#111827"
-        border.color: root.autoPilotActive ? "#10b98155" : "#374151"
-
-        Item {
-          anchors.fill: parent
-          anchors.leftMargin: 10
-          anchors.rightMargin: 10
-
-          Row {
-            spacing: 6
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
             Text {
-              text: root.autoPilotActive ? "🤖" : "⏸"
-              font.pixelSize: 12
-            }
-            Text {
-              text: root.autoPilotActive ? "Auto-Pilot Active" : "Auto-Pilot Paused"
-              color: root.autoPilotActive ? "#10b981" : "#9ca3af"
-              font.pixelSize: 10
+              text: "🎨 THEME"
+              color: Color.accent
+              font.pixelSize: 8
               font.bold: true
+              anchors.horizontalCenter: parent.horizontalCenter
+            }
+
+            // Next Theme Button
+            Rectangle {
+              width: parent.width
+              height: Style.space(24)
+              radius: 6
+              color: nextThemeMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(Color.background, 0.6)
+              border.color: nextThemeMouse.containsMouse ? Color.accent : Util.alpha(Color.foreground, 0.15)
+              border.width: 1
+
+              Row {
+                anchors.centerIn: parent
+                spacing: 3
+                Text { text: "🎲"; font.pixelSize: 8 }
+                Text { text: "Next"; color: Color.foreground; font.pixelSize: 8; font.bold: true }
+              }
+              MouseArea {
+                id: nextThemeMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  wallProc.command = ["/home/chef_carthy/.local/bin/omarchy-theme-cycle"]
+                  wallProc.running = true
+                }
+              }
+            }
+
+            // Wallpaper Switcher Button
+            Rectangle {
+              width: parent.width
+              height: Style.space(24)
+              radius: 6
+              color: bgThemeMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(Color.background, 0.6)
+              border.color: bgThemeMouse.containsMouse ? Color.accent : Util.alpha(Color.foreground, 0.15)
+              border.width: 1
+
+              Row {
+                anchors.centerIn: parent
+                spacing: 3
+                Text { text: "🖼"; font.pixelSize: 8 }
+                Text { text: "Wall"; color: Color.foreground; font.pixelSize: 8; font.bold: true }
+              }
+              MouseArea {
+                id: bgThemeMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  wallProc.command = ["omarchy", "theme", "bg-switcher"]
+                  wallProc.running = true
+                }
+              }
+            }
+
+            // Full Visual Picker Button
+            Rectangle {
+              width: parent.width
+              height: Style.space(24)
+              radius: 6
+              color: pickerThemeMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(Color.background, 0.6)
+              border.color: pickerThemeMouse.containsMouse ? Color.accent : Util.alpha(Color.foreground, 0.15)
+              border.width: 1
+
+              Row {
+                anchors.centerIn: parent
+                spacing: 3
+                Text { text: "📂"; font.pixelSize: 8 }
+                Text { text: "Pick"; color: Color.foreground; font.pixelSize: 8; font.bold: true }
+              }
+              MouseArea {
+                id: pickerThemeMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  wallProc.command = ["/usr/share/omarchy/bin/omarchy-theme-switcher"]
+                  wallProc.running = true
+                }
+              }
             }
           }
 
+          // =======================================================
+          // DIVIDER 2
+          // =======================================================
           Rectangle {
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            width: Style.space(48)
-            height: Style.space(20)
-            radius: 10
-            color: root.autoPilotActive ? "#10b981" : "#4b5563"
+            width: parent.width
+            height: 1
+            color: Util.alpha(Color.foreground, 0.12)
+          }
+
+          // =======================================================
+          // SECTION 3: HARDWARE TELEMETRY (VERTICAL TILES)
+          // =======================================================
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
 
             Text {
-              anchors.centerIn: parent
-              text: root.autoPilotActive ? "ON" : "OFF"
-              color: "#000000"
-              font.pixelSize: 9
+              text: "⚡ STATS"
+              color: Color.accent
+              font.pixelSize: 8
               font.bold: true
+              anchors.horizontalCenter: parent.horizontalCenter
             }
 
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                if (root.autoPilotActive) {
-                  root.runTurboAction("auto stop")
-                } else {
-                  root.runTurboAction("auto start")
+            // Temp Card
+            Rectangle {
+              width: parent.width
+              height: Style.space(28)
+              radius: 6
+              color: Util.alpha(Color.background, 0.6)
+              border.color: Util.alpha(Color.foreground, 0.12)
+
+              Column {
+                anchors.centerIn: parent
+                spacing: 1
+                Text { text: "PEAK TEMP"; color: Color.muted; font.pixelSize: 6; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+                Text { text: root.tempPeak + "°C"; color: root.tempColor; font.pixelSize: 9; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+              }
+            }
+
+            // CPU Load Card
+            Rectangle {
+              width: parent.width
+              height: Style.space(28)
+              radius: 6
+              color: Util.alpha(Color.background, 0.6)
+              border.color: Util.alpha(Color.foreground, 0.12)
+
+              Column {
+                anchors.centerIn: parent
+                spacing: 1
+                Text { text: "CPU LOAD"; color: Color.muted; font.pixelSize: 6; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+                Text { text: root.cpuLoad; color: root.cpuLoad > 3.0 ? Color.urgent : Color.accent; font.pixelSize: 9; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+              }
+            }
+
+            // RAM Utilization Bar
+            Column {
+              width: parent.width
+              spacing: 2
+
+              Text {
+                text: "RAM " + root.ramPercent + "%"
+                color: Color.muted
+                font.pixelSize: 7
+                font.bold: true
+                anchors.horizontalCenter: parent.horizontalCenter
+              }
+
+              Rectangle {
+                width: parent.width
+                height: 4
+                radius: 2
+                color: Util.alpha(Color.foreground, 0.15)
+
+                Rectangle {
+                  width: parent.width * Math.min(1.0, root.ramPercent / 100.0)
+                  height: parent.height
+                  radius: 2
+                  color: root.ramPercent > 85 ? Color.urgent : (root.ramPercent > 70 ? "#f59e0b" : Color.accent)
+                }
+              }
+            }
+          }
+
+          // =======================================================
+          // DIVIDER 3
+          // =======================================================
+          Rectangle {
+            width: parent.width
+            height: 1
+            color: Util.alpha(Color.foreground, 0.12)
+          }
+
+          // =======================================================
+          // SECTION 4: SMART STORAGE & CLEANER
+          // =======================================================
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Text {
+              text: "🧹 STORAGE"
+              color: Color.accent
+              font.pixelSize: 8
+              font.bold: true
+              anchors.horizontalCenter: parent.horizontalCenter
+            }
+
+            // Disk Usage Card
+            Rectangle {
+              width: parent.width
+              height: Style.space(30)
+              radius: 6
+              color: Util.alpha(Color.background, 0.6)
+              border.color: Util.alpha(Color.foreground, 0.12)
+
+              Column {
+                anchors.centerIn: parent
+                spacing: 2
+                width: parent.width - Style.space(8)
+
+                Item {
+                  width: parent.width
+                  height: Style.space(8)
+                  Text { text: "DISK"; color: Color.muted; font.pixelSize: 6; font.bold: true; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter }
+                  Text { text: Math.round(root.diskPercent) + "% (" + root.diskFreeStr + ")"; color: Color.foreground; font.pixelSize: 6; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter }
+                }
+
+                Rectangle {
+                  width: parent.width
+                  height: 4
+                  radius: 2
+                  color: Util.alpha(Color.foreground, 0.15)
+
+                  Rectangle {
+                    width: parent.width * Math.min(1.0, root.diskPercent / 100.0)
+                    height: parent.height
+                    radius: 2
+                    color: root.diskPercent > 85 ? Color.urgent : Color.accent
+                  }
+                }
+              }
+            }
+
+            // Quick Clean Action Button
+            Rectangle {
+              width: parent.width
+              height: Style.space(24)
+              radius: 6
+              color: cleanBtnMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : (root.isCleaning ? Util.alpha(Color.accent, 0.35) : Util.alpha(Color.background, 0.6))
+              border.color: cleanBtnMouse.containsMouse || root.isCleaning ? Color.accent : Util.alpha(Color.foreground, 0.15)
+              border.width: 1
+
+              Row {
+                anchors.centerIn: parent
+                spacing: 3
+                Text {
+                  text: root.isCleaning ? "⏳" : (root.cleanStatusMsg !== "" || root.userCleanableBytes < 10 * 1024 * 1024 ? "✓" : "🧹")
+                  font.pixelSize: 8
+                }
+                Text {
+                  text: {
+                    if (root.cleanStatusMsg !== "") return root.cleanStatusMsg
+                    if (root.isCleaning) return "Cleaning..."
+                    if (root.userCleanableBytes > 10 * 1024 * 1024) return "Free " + root.userCleanableStr
+                    return "✓ Caches Clean"
+                  }
+                  color: root.userCleanableBytes > 10 * 1024 * 1024 ? Color.foreground : Color.muted
+                  font.pixelSize: 7
+                  font.bold: true
+                }
+              }
+
+              MouseArea {
+                id: cleanBtnMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (!root.isCleaning) {
+                    root.isCleaning = true
+                    storageCleanProc.running = true
+                  }
                 }
               }
             }

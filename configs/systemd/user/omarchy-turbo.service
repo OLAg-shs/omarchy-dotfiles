@@ -1,0 +1,12 @@
+[Unit]
+Description=Omarchy Turbo Autonomous Thermal & Speed Optimizer
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/home/chef_carthy/.local/bin/omarchy-turbo auto start
+RemainAfterExit=yes
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

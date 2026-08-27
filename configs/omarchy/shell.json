@@ -15,9 +15,6 @@
         },
         {
           "id": "omarchy.workspaces"
-        },
-        {
-          "id": "custom.media"
         }
       ],
       "center": [
@@ -45,6 +42,9 @@
           "id": "omarchy.tray"
         },
         {
+          "id": "devinblack001.sysinfo"
+        },
+        {
           "id": "omarchy.agents"
         },
         {
@@ -58,6 +58,9 @@
         },
         {
           "id": "omarchy.monitor"
+        },
+        {
+          "id": "custom.media"
         },
         {
           "id": "omarchy.power"

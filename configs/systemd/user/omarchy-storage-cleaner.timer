@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Omarchy Storage Health Check Monthly
+
+[Timer]
+OnCalendar=*-*-01 12:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

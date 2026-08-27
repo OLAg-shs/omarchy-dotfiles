@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+import sys
+import subprocess
+import re
+import json
+
+def get_players():
+    try:
+        out = subprocess.check_output(['busctl', '--user', 'list'], stderr=subprocess.DEVNULL).decode()
+        players = []
+        for line in out.splitlines():
+            m = re.search(r'(org\.mpris\.MediaPlayer2\.([^\s]+))', line)
+            if m:
+                full_name = m.group(1)
+                short_name = m.group(2)
+                players.append((short_name, full_name))
+        return players
+    except Exception:
+        return []
+
+def get_prop(dest, prop):
+    try:
+        out = subprocess.check_output(
+            ['busctl', '--user', 'get-property', dest, '/org/mpris/MediaPlayer2', 'org.mpris.MediaPlayer2.Player', prop],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        return out
+    except Exception:
+        return None
+
+def call_method(dest, method, sig=None, val=None):
+    try:
+        cmd = ['busctl', '--user', 'call', dest, '/org/mpris/MediaPlayer2', 'org.mpris.MediaPlayer2.Player', method]
+        if sig and val is not None:
+            cmd.extend([sig, '--', str(val)])
+        subprocess.check_call(cmd, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+def parse_metadata(raw_text):
+    data = {}
+    if not raw_text:
+        return data
+    m = re.search(r'"mpris:length"\s+x\s+(\d+)', raw_text)
+    if m:
+        data['mpris:length'] = int(m.group(1))
+    m = re.search(r'"mpris:artUrl"\s+s\s+"([^"]*)"', raw_text)
+    if m:
+        data['mpris:artUrl'] = m.group(1)
+    m = re.search(r'"xesam:title"\s+s\s+"([^"]*)"', raw_text)
+    if m:
+        data['xesam:title'] = m.group(1)
+    m = re.search(r'"xesam:artist"\s+as\s+\d+\s+"([^"]*)"', raw_text)
+    if m:
+        data['xesam:artist'] = m.group(1)
+    m = re.search(r'"xesam:album"\s+s\s+"([^"]*)"', raw_text)
+    if m:
+        data['xesam:album'] = m.group(1)
+    return data
+
+def get_player_info(short_name, full_name):
+    stat_raw = get_prop(full_name, "PlaybackStatus")
+    status = stat_raw.split()[-1].strip('"') if stat_raw else "Stopped"
+    meta_raw = get_prop(full_name, "Metadata")
+    meta = parse_metadata(meta_raw)
+    pos_raw = get_prop(full_name, "Position")
+    position = 0.0
+    if pos_raw:
+        try:
+            position = int(pos_raw.split()[-1]) / 1000000.0
+        except Exception:
+            position = 0.0
+    length = 0.0
+    if 'mpris:length' in meta:
+        length = meta['mpris:length'] / 1000000.0
+
+    return {
+        "name": short_name,
+        "dbus": full_name,
+        "status": status,
+        "position": position,
+        "length": length,
+        "title": meta.get("xesam:title", ""),
+        "artist": meta.get("xesam:artist", ""),
+        "album": meta.get("xesam:album", ""),
+        "artUrl": meta.get("mpris:artUrl", "")
+    }
+
+def main():
+    args = sys.argv[1:]
+    players = get_players()
+    
+    if '--json' in args:
+        target_name = None
+        if '-p' in args:
+            idx = args.index('-p')
+            if idx + 1 < len(args): target_name = args[idx + 1]
+        
+        all_info = []
+        active_info = None
+        for s, f in players:
+            info = get_player_info(s, f)
+            all_info.append(info)
+            if target_name and (target_name in s or target_name in f):
+                active_info = info
+            elif not active_info and info['status'] == 'Playing':
+                active_info = info
+        if not active_info and all_info:
+            active_info = all_info[0]
+        
+        res = {
+            "has_player": len(all_info) > 0,
+            "active": active_info if active_info else {
+                "name": "", "status": "Stopped", "position": 0.0, "length": 0.0,
+                "title": "", "artist": "", "album": "", "artUrl": ""
+            },
+            "players": all_info
+        }
+        print(json.dumps(res))
+        return
+
+    if not args or args[0] in ['-l', '--list-all']:
+        for short_name, full_name in players:
+            print(short_name)
+        return
+
+    target_player = players[0] if players else None
+    
+    if '-p' in args:
+        idx = args.index('-p')
+        if idx + 1 < len(args):
+            pname = args[idx + 1]
+            for s, f in players:
+                if pname in s or pname in f:
+                    target_player = (s, f)
+                    break
+            args = args[:idx] + args[idx+2:]
+    elif '--player' in args:
+        idx = args.index('--player')
+        if idx + 1 < len(args):
+            pname = args[idx + 1]
+            for s, f in players:
+                if pname in s or pname in f:
+                    target_player = (s, f)
+                    break
+            args = args[:idx] + args[idx+2:]
+
+    if not target_player:
+        print("No players found", file=sys.stderr)
+        sys.exit(1)
+
+    dest = target_player[1]
+    cmd = args[0] if args else "status"
+
+    if cmd == "status":
+        raw = get_prop(dest, "PlaybackStatus")
+        if raw:
+            val = raw.split()[-1].strip('"')
+            print(val)
+        else:
+            print("Stopped")
+    elif cmd == "metadata":
+        raw = get_prop(dest, "Metadata")
+        meta = parse_metadata(raw)
+        if len(args) > 1 and args[1] in ["--format", "-f"]:
+            fmt = args[2] if len(args) > 2 else "{{title}} - {{artist}}"
+            fmt = fmt.replace("{{title}}", meta.get("xesam:title", ""))
+            fmt = fmt.replace("{{artist}}", meta.get("xesam:artist", ""))
+            fmt = fmt.replace("{{album}}", meta.get("xesam:album", ""))
+            fmt = fmt.replace("{{playerName}}", target_player[0])
+            print(fmt)
+        elif len(args) > 1:
+            key = args[1]
+            print(meta.get(key, ""))
+        else:
+            for k, v in meta.items():
+                print(f"{target_player[0]} {k} {v}")
+    elif cmd == "play-pause":
+        call_method(dest, "PlayPause")
+    elif cmd == "play":
+        call_method(dest, "Play")
+    elif cmd == "pause":
+        call_method(dest, "Pause")
+    elif cmd == "next":
+        call_method(dest, "Next")
+    elif cmd == "previous":
+        call_method(dest, "Previous")
+    elif cmd == "stop":
+        call_method(dest, "Stop")
+    elif cmd == "position":
+        if len(args) > 1:
+            offset = float(args[1])
+            call_method(dest, "Seek", "x", int(offset * 1000000))
+        else:
+            raw = get_prop(dest, "Position")
+            if raw:
+                us = int(raw.split()[-1])
+                print(f"{us / 1000000:.2f}")
+    elif cmd == "set-position":
+        if len(args) > 1:
+            target = float(args[1])
+            pos_raw = get_prop(dest, "Position")
+            cur_pos = 0.0
+            if pos_raw:
+                try: cur_pos = int(pos_raw.split()[-1]) / 1000000.0
+                except Exception: pass
+            diff = target - cur_pos
+            call_method(dest, "Seek", "x", int(diff * 1000000))
+    else:
+        print(f"Unknown command: {cmd}", file=sys.stderr)
+
+if __name__ == '__main__':
+    main()

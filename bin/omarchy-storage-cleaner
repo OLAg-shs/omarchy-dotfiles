@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""
+Omarchy Smart Storage Cleaner Engine
+Scans system and user caches, provides categorized breakdowns,
+executes safe cleaning, and manages monthly health reminders.
+"""
+
+import sys
+import os
+import json
+import subprocess
+import shutil
+import time
+from pathlib import Path
+
+STATE_DIR = Path.home() / ".local" / "state" / "omarchy"
+STATE_FILE = STATE_DIR / "storage_cleaner.json"
+CACHE_DIR = Path.home() / ".cache"
+TRASH_DIR = Path.home() / ".local" / "share" / "Trash"
+
+def get_dir_size(path: Path) -> int:
+    total = 0
+    try:
+        if path.is_file() or path.is_symlink():
+            return path.stat().st_size
+        for entry in os.scandir(path):
+            try:
+                if entry.is_file(follow_symlinks=False):
+                    total += entry.stat().st_size
+                elif entry.is_dir(follow_symlinks=False):
+                    total += get_dir_size(Path(entry.path))
+            except (PermissionError, FileNotFoundError):
+                continue
+    except (PermissionError, FileNotFoundError):
+        pass
+    return total
+
+def format_bytes(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    elif size < 1024 ** 2:
+        return f"{size / 1024:.1f} KB"
+    elif size < 1024 ** 3:
+        return f"{size / (1024 ** 2):.1f} MB"
+    else:
+        return f"{size / (1024 ** 3):.2f} GB"
+
+def get_disk_usage():
+    try:
+        st = os.statvfs("/")
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        used = total - free
+        percent = round((used / total) * 100, 1)
+        return {
+            "total_bytes": total,
+            "used_bytes": used,
+            "free_bytes": free,
+            "total_str": format_bytes(total),
+            "used_str": format_bytes(used),
+            "free_str": format_bytes(free),
+            "percent": percent
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+def scan_pacman_cache():
+    pacman_pkg = Path("/var/cache/pacman/pkg")
+    size = get_dir_size(pacman_pkg) if pacman_pkg.exists() else 0
+    return {
+        "id": "pacman",
+        "name": "Package Cache",
+        "description": "Old pacman package versions in /var/cache/pacman/pkg",
+        "size_bytes": size,
+        "size_str": format_bytes(size),
+        "safe_to_clean": True,
+        "requires_root": True
+    }
+
+def scan_user_browser_cache():
+    targets = [
+        CACHE_DIR / "chromium",
+        CACHE_DIR / "google-chrome",
+        CACHE_DIR / "mozilla",
+        CACHE_DIR / "BraveSoftware"
+    ]
+    size = sum(get_dir_size(t) for t in targets if t.exists())
+    return {
+        "id": "browser",
+        "name": "Browser Cache",
+        "description": "Cached web pages, media and HTTP objects",
+        "size_bytes": size,
+        "size_str": format_bytes(size),
+        "safe_to_clean": True,
+        "requires_root": False
+    }
+
+def scan_thumbnails():
+    thumb_dir = CACHE_DIR / "thumbnails"
+    size = get_dir_size(thumb_dir) if thumb_dir.exists() else 0
+    return {
+        "id": "thumbnails",
+        "name": "Thumbnails",
+        "description": "Image and video preview cache",
+        "size_bytes": size,
+        "size_str": format_bytes(size),
+        "safe_to_clean": True,
+        "requires_root": False
+    }
+
+def scan_trash():
+    size = get_dir_size(TRASH_DIR) if TRASH_DIR.exists() else 0
+    return {
+        "id": "trash",
+        "name": "System Trash",
+        "description": "Deleted files in ~/.local/share/Trash",
+        "size_bytes": size,
+        "size_str": format_bytes(size),
+        "safe_to_clean": True,
+        "requires_root": False
+    }
+
+def scan_journal_logs():
+    size = 0
+    try:
+        out = subprocess.check_output(["journalctl", "--disk-usage"], text=True, stderr=subprocess.DEVNULL)
+        parts = out.split()
+        for i, p in enumerate(parts):
+            if "take" in p and i + 2 < len(parts):
+                val_str = parts[i + 2]
+                if val_str.endswith("M"):
+                    size = int(float(val_str[:-1]) * 1024 * 1024)
+                elif val_str.endswith("G"):
+                    size = int(float(val_str[:-1]) * 1024 * 1024 * 1024)
+                elif val_str.endswith("K"):
+                    size = int(float(val_str[:-1]) * 1024)
+                break
+    except Exception:
+        pass
+    return {
+        "id": "journal",
+        "name": "System Logs",
+        "description": "Systemd journal logs older than 7 days",
+        "size_bytes": size,
+        "size_str": format_bytes(size),
+        "safe_to_clean": True,
+        "requires_root": True
+    }
+
+def scan_general_cache():
+    excluded = {"chromium", "google-chrome", "mozilla", "BraveSoftware", "thumbnails"}
+    total = 0
+    if CACHE_DIR.exists():
+        for entry in os.scandir(CACHE_DIR):
+            if entry.name not in excluded:
+                total += get_dir_size(Path(entry.path))
+    return {
+        "id": "app_cache",
+        "name": "App & Dev Caches",
+        "description": "Temporary application and electron caches",
+        "size_bytes": total,
+        "size_str": format_bytes(total),
+        "safe_to_clean": True,
+        "requires_root": False
+    }
+
+def scan_all():
+    user_categories = [
+        scan_user_browser_cache(),
+        scan_thumbnails(),
+        scan_general_cache(),
+        scan_trash()
+    ]
+    system_categories = [
+        scan_pacman_cache(),
+        scan_journal_logs()
+    ]
+    categories = user_categories + system_categories
+    user_cleanable = sum(c["size_bytes"] for c in user_categories)
+    system_cleanable = sum(c["size_bytes"] for c in system_categories)
+    total_cleanable = user_cleanable + system_cleanable
+    disk = get_disk_usage()
+    
+    result = {
+        "disk": disk,
+        "user_cleanable_bytes": user_cleanable,
+        "user_cleanable_str": format_bytes(user_cleanable),
+        "system_cleanable_bytes": system_cleanable,
+        "system_cleanable_str": format_bytes(system_cleanable),
+        "total_cleanable_bytes": total_cleanable,
+        "total_cleanable_str": format_bytes(total_cleanable),
+        "categories": categories,
+        "timestamp": int(time.time())
+    }
+    return result
+
+def clean_category(cat_id: str):
+    freed = 0
+    if cat_id == "browser":
+        for t in [CACHE_DIR / "chromium", CACHE_DIR / "google-chrome", CACHE_DIR / "mozilla"]:
+            if t.exists():
+                freed += get_dir_size(t)
+                shutil.rmtree(t, ignore_errors=True)
+    elif cat_id == "thumbnails":
+        t = CACHE_DIR / "thumbnails"
+        if t.exists():
+            freed += get_dir_size(t)
+            shutil.rmtree(t, ignore_errors=True)
+    elif cat_id == "trash":
+        if TRASH_DIR.exists():
+            freed += get_dir_size(TRASH_DIR)
+            shutil.rmtree(TRASH_DIR / "files", ignore_errors=True)
+            shutil.rmtree(TRASH_DIR / "info", ignore_errors=True)
+    elif cat_id == "app_cache":
+        excluded = {"chromium", "google-chrome", "mozilla", "BraveSoftware", "thumbnails"}
+        if CACHE_DIR.exists():
+            for entry in os.scandir(CACHE_DIR):
+                if entry.name not in excluded:
+                    p = Path(entry.path)
+                    freed += get_dir_size(p)
+                    if p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+    elif cat_id == "journal":
+        try:
+            subprocess.run(["journalctl", "--vacuum-time=7d"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    elif cat_id == "pacman":
+        try:
+            subprocess.run(["pkexec", "paccache", "-rk1"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+    return freed
+
+def clean_safe_user_targets():
+    freed = 0
+    freed += clean_category("browser")
+    freed += clean_category("thumbnails")
+    freed += clean_category("trash")
+    freed += clean_category("app_cache")
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state = {
+        "last_clean_timestamp": int(time.time()),
+        "last_freed_bytes": freed,
+        "last_freed_str": format_bytes(freed)
+    }
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
+    
+    if freed > 1024 * 1024:
+        try:
+            subprocess.run([
+                "omarchy", "notification", "send",
+                "-g", "🧹",
+                "-u", "low",
+                "Storage Cleaned",
+                f"Successfully freed {format_bytes(freed)} of user cache."
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    return freed
+
+def check_monthly_notification():
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    last_clean = 0
+    if STATE_FILE.exists():
+        try:
+            with open(STATE_FILE, "r") as f:
+                data = json.load(f)
+                last_clean = data.get("last_clean_timestamp", 0)
+        except Exception:
+            pass
+
+    now = time.time()
+    days_since_clean = (now - last_clean) / (24 * 3600)
+
+    scan_data = scan_all()
+    cleanable_bytes = scan_data["total_cleanable_bytes"]
+    cleanable_str = scan_data["total_cleanable_str"]
+    disk_percent = scan_data["disk"]["percent"]
+
+    if (days_since_clean >= 30 and cleanable_bytes > 500 * 1024 * 1024) or (disk_percent > 80 and cleanable_bytes > 1024 * 1024 * 1024):
+        msg = f"~{cleanable_str} of safe cleanable cache detected ({disk_percent}% disk used)."
+        try:
+            subprocess.run([
+                "omarchy", "notification", "send",
+                "-g", "󰃮",
+                "-u", "normal",
+                "Monthly Storage Health Check",
+                msg
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        return True
+    return False
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] == "scan":
+        data = scan_all()
+        print(json.dumps(data, indent=2))
+    elif sys.argv[1] == "clean":
+        cat = sys.argv[2] if len(sys.argv) > 2 else "safe"
+        if cat == "safe":
+            freed = clean_safe_user_targets()
+        else:
+            freed = clean_category(cat)
+        print(json.dumps({
+            "status": "success",
+            "freed_bytes": freed,
+            "freed_str": format_bytes(freed)
+        }))
+    elif sys.argv[1] == "notify":
+        triggered = check_monthly_notification()
+        print(json.dumps({"notification_sent": triggered}))
+    elif sys.argv[1] == "disk":
+        print(json.dumps(get_disk_usage(), indent=2))
+    else:
+        print("Usage: omarchy-storage-cleaner [scan|clean [category]|notify|disk]")
+
+if __name__ == "__main__":
+    main()

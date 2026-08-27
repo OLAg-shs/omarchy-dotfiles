@@ -1,0 +1,7 @@
+[Unit]
+Description=Omarchy Monthly Storage Health Check
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/chef_carthy/.local/bin/omarchy-storage-cleaner notify

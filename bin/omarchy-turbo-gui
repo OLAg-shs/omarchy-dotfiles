@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+import tkinter as tk
+from tkinter import ttk
+import subprocess
+import json
+import time
+
+class TurboGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("⚡ Omarchy Turbo Power & Telemetry Center")
+        self.root.geometry("440x480")
+        self.root.configure(bg="#0f131a")
+        self.root.resizable(False, False)
+
+        # Style
+        style = ttk.Style()
+        style.theme_use('clam')
+
+        # Header
+        header = tk.Frame(root, bg="#141924", padx=16, pady=12)
+        header.pack(fill="x")
+        
+        lbl_title = tk.Label(header, text="⚡ OMARCHY TURBO HUD", font=("Sans", 12, "bold"), fg="#10b981", bg="#141924")
+        lbl_title.pack(side="left")
+
+        self.lbl_profile = tk.Label(header, text="BALANCED", font=("Sans", 9, "bold"), fg="#3b82f6", bg="#1e293b", padx=8, pady=2)
+        self.lbl_profile.pack(side="right")
+
+        # Telemetry Cards
+        telemetry_frame = tk.Frame(root, bg="#0f131a", padx=16, pady=12)
+        telemetry_frame.pack(fill="x")
+
+        # Thermals Box
+        box_thermals = tk.LabelFrame(telemetry_frame, text=" 🌡️ CPU THERMALS & LOAD ", font=("Sans", 9, "bold"), fg="#94a3b8", bg="#141924", padx=12, pady=10)
+        box_thermals.pack(fill="x", pady=6)
+
+        row_t = tk.Frame(box_thermals, bg="#141924")
+        row_t.pack(fill="x")
+
+        self.lbl_peak_temp = tk.Label(row_t, text="Peak: --°C", font=("Sans", 14, "bold"), fg="#10b981", bg="#141924")
+        self.lbl_peak_temp.pack(side="left", expand=True)
+
+        self.lbl_avg_temp = tk.Label(row_t, text="Avg: --°C", font=("Sans", 14, "bold"), fg="#e5e7eb", bg="#141924")
+        self.lbl_avg_temp.pack(side="left", expand=True)
+
+        self.lbl_load = tk.Label(row_t, text="Load: --", font=("Sans", 14, "bold"), fg="#3b82f6", bg="#141924")
+        self.lbl_load.pack(side="left", expand=True)
+
+        # RAM Box
+        box_ram = tk.LabelFrame(telemetry_frame, text=" 🧠 MEMORY (RAM) CACHE ", font=("Sans", 9, "bold"), fg="#94a3b8", bg="#141924", padx=12, pady=10)
+        box_ram.pack(fill="x", pady=6)
+
+        self.lbl_ram_text = tk.Label(box_ram, text="Used: -- / -- GB (--%)", font=("Sans", 11, "bold"), fg="#e5e7eb", bg="#141924")
+        self.lbl_ram_text.pack(anchor="w", pady=2)
+
+        self.ram_bar = ttk.Progressbar(box_ram, orient="horizontal", length=380, mode="determinate")
+        self.ram_bar.pack(fill="x", pady=4)
+
+        # Actions
+        box_actions = tk.LabelFrame(root, text=" 🚀 1-CLICK ACTIONS ", font=("Sans", 9, "bold"), fg="#94a3b8", bg="#141924", padx=12, pady=12)
+        box_actions.pack(fill="x", padx=16, pady=6)
+
+        btn_frame = tk.Frame(box_actions, bg="#141924")
+        btn_frame.pack(fill="x")
+
+        btn_cool = tk.Button(btn_frame, text="❄️ Cool Down", font=("Sans", 10, "bold"), bg="#10b981", fg="#000000", activebackground="#059669", bd=0, padx=10, pady=8, cursor="hand2", command=self.action_cool)
+        btn_cool.pack(side="left", expand=True, fill="x", padx=4)
+
+        btn_boost = tk.Button(btn_frame, text="🚀 Boost Max", font=("Sans", 10, "bold"), bg="#ef4444", fg="#ffffff", activebackground="#dc2626", bd=0, padx=10, pady=8, cursor="hand2", command=self.action_boost)
+        btn_boost.pack(side="left", expand=True, fill="x", padx=4)
+
+        btn_clean = tk.Button(btn_frame, text="🧹 Clean RAM", font=("Sans", 10, "bold"), bg="#3b82f6", fg="#ffffff", activebackground="#2563eb", bd=0, padx=10, pady=8, cursor="hand2", command=self.action_clean)
+        btn_clean.pack(side="left", expand=True, fill="x", padx=4)
+
+        # Auto-Pilot Status
+        box_auto = tk.Frame(root, bg="#141924", padx=16, pady=10)
+        box_auto.pack(fill="x", padx=16, pady=8)
+
+        self.lbl_auto = tk.Label(box_auto, text="🤖 Auto-Pilot Daemon: ACTIVE", font=("Sans", 10, "bold"), fg="#10b981", bg="#141924")
+        self.lbl_auto.pack(side="left")
+
+        self.btn_auto_toggle = tk.Button(box_auto, text="PAUSE", font=("Sans", 9, "bold"), bg="#374151", fg="#ffffff", bd=0, padx=12, pady=4, cursor="hand2", command=self.toggle_auto)
+        self.btn_auto_toggle.pack(side="right")
+
+        self.update_telemetry()
+
+    def update_telemetry(self):
+        try:
+            res = subprocess.run(["/home/chef_carthy/.local/bin/omarchy-turbo", "--json"], stdout=subprocess.PIPE, text=True)
+            data = json.loads(res.stdout.strip())
+
+            peak = data.get("temp_peak", 50.0)
+            avg = data.get("temp_avg", 45.0)
+            load = data.get("load_1m", 1.0)
+            ram_pct = data.get("ram_percent", 50.0)
+            ram_u = data.get("ram_used", 4.0)
+            ram_t = data.get("ram_total", 8.0)
+            profile = data.get("power_profile", "balanced").upper()
+            auto = data.get("auto_pilot", True)
+
+            # Colors
+            temp_col = "#10b981" if peak < 65 else ("#f59e0b" if peak < 80 else "#ef4444")
+            self.lbl_peak_temp.config(text=f"Peak: {peak}°C", fg=temp_col)
+            self.lbl_avg_temp.config(text=f"Avg: {avg}°C")
+            self.lbl_load.config(text=f"Load: {load}")
+            self.lbl_profile.config(text=profile)
+
+            self.lbl_ram_text.config(text=f"Used: {ram_u} / {ram_t} GB ({ram_pct}%)")
+            self.ram_bar['value'] = ram_pct
+
+            if auto:
+                self.lbl_auto.config(text="🤖 Auto-Pilot Daemon: ACTIVE", fg="#10b981")
+                self.btn_auto_toggle.config(text="PAUSE", bg="#374151")
+            else:
+                self.lbl_auto.config(text="⏸ Auto-Pilot Daemon: PAUSED", fg="#94a3b8")
+                self.btn_auto_toggle.config(text="START", bg="#10b981")
+
+        except Exception as e:
+            pass
+
+        self.root.after(2000, self.update_telemetry)
+
+    def action_cool(self):
+        subprocess.run(["/home/chef_carthy/.local/bin/omarchy-turbo", "cool"])
+        self.update_telemetry()
+
+    def action_boost(self):
+        subprocess.run(["/home/chef_carthy/.local/bin/omarchy-turbo", "boost"])
+        self.update_telemetry()
+
+    def action_clean(self):
+        subprocess.run(["/home/chef_carthy/.local/bin/omarchy-turbo", "clean"])
+        self.update_telemetry()
+
+    def toggle_auto(self):
+        btn_text = self.btn_auto_toggle.cget("text")
+        if btn_text == "PAUSE":
+            subprocess.run(["/home/chef_carthy/.local/bin/omarchy-turbo", "auto", "stop"])
+        else:
+            subprocess.run(["/home/chef_carthy/.local/bin/omarchy-turbo", "auto", "start"])
+        self.update_telemetry()
+
+if __name__ == "__main__":
+    tk_root = tk.Tk()
+    app = TurboGUI(tk_root)
+    tk_root.mainloop()
