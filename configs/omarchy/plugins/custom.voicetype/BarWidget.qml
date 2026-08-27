@@ -145,76 +145,75 @@ BarWidget {
     return m + ":" + (s < 10 ? "0" : "") + s
   }
 
+  visible: true
+  implicitWidth: barPill.implicitWidth
+  implicitHeight: barSize
+
   // --- Top Bar Pill Widget ---
-  Item {
+  Rectangle {
     id: barPill
-    width: pillRow.implicitWidth + Style.space(16)
-    height: parent ? parent.height : Style.space(28)
-    anchors.verticalCenter: parent ? parent.verticalCenter : undefined
+    anchors.verticalCenter: parent.verticalCenter
+    height: Math.min(parent.height - Style.space(4), Style.space(26))
+    implicitWidth: pillRow.implicitWidth + Style.space(16)
+    radius: Style.radius(4)
+    color: {
+      if (root.recordState === "recording") return Util.alpha(Color.urgent, 0.25)
+      if (root.recordState === "transcribing") return Util.alpha(Color.accent, 0.25)
+      if (pillMouse.containsMouse || root.popupOpen) return Util.alpha(Color.accent, 0.2)
+      return Util.alpha(Color.background, 0.6)
+    }
+    border.color: {
+      if (root.recordState === "recording") return Color.urgent
+      if (root.recordState === "transcribing") return Color.accent
+      if (pillMouse.containsMouse || root.popupOpen) return Color.accent
+      return Util.alpha(Color.foreground, 0.18)
+    }
+    border.width: 1
 
-    Rectangle {
+    Row {
+      id: pillRow
+      anchors.centerIn: parent
+      spacing: Style.space(4)
+
+      // Mic / Recording Pulse Icon
+      Text {
+        text: root.recordState === "recording" ? "🔴" : (root.recordState === "transcribing" ? "⚡" : "🎙️")
+        font.pixelSize: Style.font.caption
+        anchors.verticalCenter: parent.verticalCenter
+        
+        SequentialAnimation on opacity {
+          running: root.recordState === "recording"
+          loops: Animation.Infinite
+          NumberAnimation { to: 0.3; duration: 500; easing.type: Easing.InOutQuad }
+          NumberAnimation { to: 1.0; duration: 500; easing.type: Easing.InOutQuad }
+        }
+      }
+
+      Text {
+        text: {
+          if (root.recordState === "recording") return "Rec " + root.formatTime(root.recordDuration)
+          if (root.recordState === "transcribing") return "Transcribing..."
+          return "Voice"
+        }
+        color: root.recordState === "recording" ? Color.urgent : (root.recordState === "transcribing" ? Color.accent : Color.foreground)
+        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+        font.pixelSize: Style.font.bodySmall
+        font.bold: true
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    MouseArea {
+      id: pillMouse
       anchors.fill: parent
-      anchors.margins: Style.space(2)
-      radius: Style.radius(4)
-      color: {
-        if (root.recordState === "recording") return Util.alpha(Color.urgent, 0.25)
-        if (root.recordState === "transcribing") return Util.alpha(Color.accent, 0.25)
-        if (pillMouse.containsMouse || root.popupOpen) return Util.alpha(Color.foreground, 0.12)
-        return "transparent"
-      }
-      border.color: {
-        if (root.recordState === "recording") return Color.urgent
-        if (root.recordState === "transcribing") return Color.accent
-        if (pillMouse.containsMouse || root.popupOpen) return Util.alpha(Color.foreground, 0.2)
-        return "transparent"
-      }
-      border.width: 1
-
-      Row {
-        id: pillRow
-        anchors.centerIn: parent
-        spacing: Style.space(5)
-
-        // Mic / Recording Pulse Icon
-        Text {
-          text: root.recordState === "recording" ? "🔴" : (root.recordState === "transcribing" ? "⚡" : "🎙️")
-          font.pixelSize: Style.font.caption
-          anchors.verticalCenter: parent.verticalCenter
-          
-          SequentialAnimation on opacity {
-            running: root.recordState === "recording"
-            loops: Animation.Infinite
-            NumberAnimation { to: 0.3; duration: 500; easing.type: Easing.InOutQuad }
-            NumberAnimation { to: 1.0; duration: 500; easing.type: Easing.InOutQuad }
-          }
-        }
-
-        Text {
-          text: {
-            if (root.recordState === "recording") return "Rec " + root.formatTime(root.recordDuration)
-            if (root.recordState === "transcribing") return "Transcribing..."
-            return "Voice"
-          }
-          color: root.recordState === "recording" ? Color.urgent : (root.recordState === "transcribing" ? Color.accent : Color.foreground)
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Style.font.bodySmall
-          font.bold: root.recordState !== "idle"
-          anchors.verticalCenter: parent.verticalCenter
-        }
-      }
-
-      MouseArea {
-        id: pillMouse
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        acceptedButtons: Qt.LeftButton | Qt.RightButton
-        onClicked: (mouse) => {
-          if (mouse.button === Qt.RightButton) {
-            toggleProc.running = true
-          } else {
-            root.popupOpen = !root.popupOpen
-          }
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      acceptedButtons: Qt.LeftButton | Qt.RightButton
+      onClicked: (mouse) => {
+        if (mouse.button === Qt.RightButton) {
+          toggleProc.running = true
+        } else {
+          root.popupOpen = !root.popupOpen
         }
       }
     }
