@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "custom.chef-hud",
+  "name": "Chef_Carthy Cyber & AI Security HUD",
+  "version": "1.0.0",
+  "author": "Maccarthy Quest",
+  "description": "Live cybersecurity posture telemetry, open socket monitor, firewall status, and AI Security Assistant HUD",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Chef_Carthy Cyber HUD",
+    "description": "Live security posture & AI auditor launcher",
+    "category": "System",
+    "allowMultiple": false
+  }
+}
